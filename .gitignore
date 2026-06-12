@@ -1,0 +1,37 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Umgebung
+.env
+
+# Daten (niemals in Git)
+data/raw/
+data/features/
+*.parquet
+*.csv
+
+# Modelle
+models/
+*.pkl
+*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Logs
+*.log
+logs/

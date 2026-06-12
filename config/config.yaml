@@ -1,0 +1,42 @@
+﻿# QuantzAI â€“ Hauptkonfiguration
+# Alle Parameter hier â€“ kein Hardcoding im Code
+
+data:
+  symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+  timeframes:
+    - H1
+    - H4
+  history_years: 4
+
+data_validation:
+  max_missing_pct: 5.0
+  outlier_atr_multiplier: 5.0
+  min_quality_score: 0.95
+  interpolation_method: linear
+  max_gap_candles: 3
+
+features:
+  ema_periods: [9, 20, 50, 200]
+  sma_periods: [20, 50]
+  rsi_periods: [14]
+  atr_period: 14
+  bollinger_period: 20
+  bollinger_std: 2
+  include_time_features: true
+  warmup_candles: 200
+  include_sentiment: false
+
+broker:
+  primary: mt5
+  fallback: oanda
+  max_price_discrepancy_pips: 5
+
+risk:
+  max_risk_per_trade_pct: 1.0
+  daily_loss_limit_pct: 5.0
+  max_drawdown_pct: 15.0
+  max_correlation: 0.8
+  spread_filter_pips: 3.0
