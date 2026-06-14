@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "quantzai"
 version = "0.1.0"
 description = "Automated ML-based trading system for MT5"
@@ -9,7 +9,7 @@ dependencies = [
   "pyyaml>=6.0",
   "python-dotenv>=1.0",
   "loguru>=0.7",
-  "pandas-ta>=0.3",
+  "ta>=0.11",
   "requests>=2.31",
   "tqdm>=4.66",
   "pyarrow>=14.0",
