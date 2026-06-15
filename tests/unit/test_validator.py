@@ -130,22 +130,22 @@ class TestDataQualityReport:
 class TestCleanData:
 
     def test_clean_data_is_usable(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.is_usable is True
 
     def test_clean_data_no_violations(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.duplicates_removed == 0
         assert report.ohlc_violations    == 0
         assert report.nan_rows_removed   == 0
 
     def test_report_has_correct_symbol_timeframe(self, validator, clean_df):
-        report = validator.validate(clean_df, "GBPUSD", "H4")
+        report, clean_df = validator.validate(clean_df, "GBPUSD", "H4")
         assert report.symbol    == "GBPUSD"
         assert report.timeframe == "H4"
 
     def test_quality_score_between_0_and_1(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert 0.0 <= report.quality_score <= 1.0
 
 
@@ -158,18 +158,20 @@ class TestNaNCheck:
     def test_nan_rows_removed(self, validator, clean_df):
         clean_df.loc[5, "close"] = np.nan
         clean_df.loc[10, "high"] = np.nan
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.nan_rows_removed == 2
 
     def test_nan_warning_in_report(self, validator, clean_df):
         clean_df.loc[3, "open"] = np.nan
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert any("NaN" in w for w in report.warnings)
 
     def test_all_nan_rows_removed_from_df(self, validator, clean_df):
         clean_df.loc[0, "volume"] = np.nan
-        report = validator.validate(clean_df, "EURUSD", "H1")
-        assert report.total_candles == len(clean_df) - 1
+        original_len = len(clean_df)
+        report, result_df = validator.validate(clean_df, "EURUSD", "H1")
+        assert report.nan_rows_removed == 1
+        assert len(result_df) == original_len - 1
 
 
 # ─────────────────────────────────────────────
@@ -181,7 +183,7 @@ class TestDuplicateCheck:
     def test_duplicates_removed(self, validator, clean_df):
         dup = clean_df.iloc[[5, 5]].copy()
         df  = pd.concat([clean_df, dup]).reset_index(drop=True)
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.duplicates_removed >= 1
 
     def test_newest_entry_kept(self, validator, clean_df):
@@ -189,11 +191,11 @@ class TestDuplicateCheck:
         row = clean_df.iloc[[0]].copy()
         row["close"] = 9999.0
         df  = pd.concat([clean_df, row]).reset_index(drop=True)
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.duplicates_removed >= 1
 
     def test_no_duplicate_warning_when_clean(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert not any("Duplikat" in w for w in report.warnings)
 
 
@@ -205,21 +207,21 @@ class TestOHLCConsistency:
 
     def test_high_below_close_removed(self, validator, clean_df):
         clean_df.loc[5, "high"] = clean_df.loc[5, "low"] - 0.001  # high < low
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.ohlc_violations >= 1
 
     def test_low_above_open_removed(self, validator, clean_df):
         clean_df.loc[7, "low"] = clean_df.loc[7, "open"] + 0.01  # low > open
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.ohlc_violations >= 1
 
     def test_ohlc_warning_in_report(self, validator, clean_df):
         clean_df.loc[3, "high"] = clean_df.loc[3, "close"] - 0.01
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert any("OHLC" in w for w in report.warnings)
 
     def test_valid_ohlc_not_flagged(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.ohlc_violations == 0
 
 
@@ -236,7 +238,7 @@ class TestZeroRange:
         clean_df.loc[10, "low"]   = val
         clean_df.loc[10, "open"]  = val
         before = len(clean_df)
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         # Zeile entfernt (danach ggf. interpoliert) – mind. eine Warning vorhanden
         all_warnings = " ".join(report.warnings)
         assert "Zero-Range" in all_warnings or "Lueck" in all_warnings or "interpoliert" in all_warnings
@@ -246,13 +248,13 @@ class TestZeroRange:
         clean_df.loc[10, "high"]  = val
         clean_df.loc[10, "low"]   = val
         clean_df.loc[10, "open"]  = val
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         all_warnings = " ".join(report.warnings)
         assert "Zero-Range" in all_warnings or "Lueck" in all_warnings or "interpoliert" in all_warnings
 
     def test_negative_range_also_removed(self, validator, clean_df):
         clean_df.loc[5, "high"] = clean_df.loc[5, "low"] - 0.0001
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.ohlc_violations >= 1 or report.total_candles < len(clean_df)
 
 
@@ -267,18 +269,18 @@ class TestOutlierCheck:
         # Riesige Kerze einfuegen
         df.loc[100, "high"] = df.loc[100, "close"] + 5.0   # 5 EUR Range
         df.loc[100, "low"]  = df.loc[100, "close"] - 5.0
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.outliers_flagged >= 1
 
     def test_no_outlier_on_clean_data(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.outliers_flagged == 0
 
     def test_outlier_warning_in_report(self, validator):
         df = _make_ohlcv(200)
         df.loc[100, "high"] = df.loc[100, "close"] + 5.0
         df.loc[100, "low"]  = df.loc[100, "close"] - 5.0
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         if report.outliers_flagged > 0:
             assert any("Ausreisser" in w or "outlier" in w.lower() for w in report.warnings)
 
@@ -290,20 +292,20 @@ class TestOutlierCheck:
 class TestGapCheck:
 
     def test_no_gaps_on_clean_data(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.missing_candles == 0
 
     def test_gaps_detected(self, validator):
         df = _make_ohlcv(50)
         # 2 Zeilen entfernen → Luecke
         df = df.drop(index=[10, 11]).reset_index(drop=True)
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.missing_candles >= 2
 
     def test_small_gaps_cause_warning_not_error(self, validator):
         df = _make_ohlcv(50)
         df = df.drop(index=[10]).reset_index(drop=True)
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.is_usable is True
         assert any("interpoliert" in w or "Lueck" in w for w in report.warnings)
 
@@ -318,7 +320,7 @@ class TestGapCheck:
     def test_missing_pct_in_report(self, validator):
         df     = _make_ohlcv(100)
         df_cut = df.drop(index=[5]).reset_index(drop=True)
-        report = validator.validate(df_cut, "EURUSD", "H1")
+        report, clean_df = validator.validate(df_cut, "EURUSD", "H1")
         assert report.missing_pct >= 0.0
 
 
@@ -329,7 +331,7 @@ class TestGapCheck:
 class TestQualityScore:
 
     def test_perfect_data_score_near_1(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.quality_score >= 0.95
 
     def test_low_quality_not_usable(self):
@@ -338,11 +340,11 @@ class TestQualityScore:
         # Viele OHLC-Verletzungen einbauen
         for i in range(0, 30):
             df.loc[i, "high"] = df.loc[i, "low"] - 0.001
-        report = v.validate(df, "EURUSD", "H1")
+        report, clean_df = v.validate(df, "EURUSD", "H1")
         assert report.is_usable is False
 
     def test_usable_flag_true_on_good_data(self, validator, clean_df):
-        report = validator.validate(clean_df, "EURUSD", "H1")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "H1")
         assert report.is_usable is True
 
     def test_errors_populated_when_not_usable(self):
@@ -350,7 +352,7 @@ class TestQualityScore:
         df = _make_ohlcv(100)
         for i in range(0, 30):
             df.loc[i, "high"] = df.loc[i, "low"] - 0.001
-        report = v.validate(df, "EURUSD", "H1")
+        report, clean_df = v.validate(df, "EURUSD", "H1")
         if not report.is_usable:
             assert len(report.errors) > 0
 
@@ -406,10 +408,59 @@ class TestEdgeCases:
     def test_single_row_df(self, validator):
         df = _make_ohlcv(1)
         # Soll nicht crashen
-        report = validator.validate(df, "EURUSD", "H1")
+        report, clean_df = validator.validate(df, "EURUSD", "H1")
         assert report.total_candles >= 0
 
     def test_unknown_timeframe_no_gap_check(self, validator, clean_df):
         # Unbekannter Timeframe -> kein Gap-Check, kein Absturz
-        report = validator.validate(clean_df, "EURUSD", "X99")
+        report, clean_df = validator.validate(clean_df, "EURUSD", "X99")
         assert report is not None
+
+
+# ─────────────────────────────────────────────
+#  Tests: clean_df Rueckgabe
+# ─────────────────────────────────────────────
+
+class TestCleanDfReturn:
+
+    def test_returns_tuple(self, validator, clean_df):
+        result = validator.validate(clean_df, "EURUSD", "H1")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_second_element_is_dataframe(self, validator, clean_df):
+        _, df = validator.validate(clean_df, "EURUSD", "H1")
+        import pandas as pd
+        assert isinstance(df, pd.DataFrame)
+
+    def test_clean_df_has_no_nan(self, validator, clean_df):
+        clean_df.loc[5,  "close"] = float("nan")
+        clean_df.loc[10, "high"]  = float("nan")
+        _, df = validator.validate(clean_df, "EURUSD", "H1")
+        ohlcv = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+        assert not df[ohlcv].isna().any().any()
+
+    def test_clean_df_has_no_duplicates(self, validator, clean_df):
+        dup = clean_df.iloc[[5]].copy()
+        df_with_dup = pd.concat([clean_df, dup]).reset_index(drop=True)
+        _, df = validator.validate(df_with_dup, "EURUSD", "H1")
+        assert df["timestamp"].duplicated().sum() == 0
+
+    def test_clean_df_has_no_ohlc_violations(self, validator, clean_df):
+        clean_df.loc[7, "high"] = clean_df.loc[7, "low"] - 0.01
+        _, df = validator.validate(clean_df, "EURUSD", "H1")
+        valid_high = (df["high"] >= df["open"]) & (df["high"] >= df["close"]) & (df["high"] >= df["low"])
+        valid_low  = (df["low"]  <= df["open"]) & (df["low"]  <= df["close"]) & (df["low"]  <= df["high"])
+        assert valid_high.all() and valid_low.all()
+
+    def test_clean_df_timestamp_column_present(self, validator, clean_df):
+        _, df = validator.validate(clean_df, "EURUSD", "H1")
+        assert "timestamp" in df.columns
+
+    def test_clean_df_smaller_than_input_when_dirty(self, validator, clean_df):
+        clean_df.loc[3,  "close"] = float("nan")
+        clean_df.loc[7,  "high"]  = clean_df.loc[7, "low"] - 0.01
+        original_len = len(clean_df)
+        _, df = validator.validate(clean_df, "EURUSD", "H1")
+        # Mindestens 2 Zeilen entfernt (NaN + OHLC-Violation)
+        assert len(df) <= original_len - 2

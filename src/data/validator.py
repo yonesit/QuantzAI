@@ -144,12 +144,18 @@ class DataValidator:
         df: pd.DataFrame,
         symbol:    str,
         timeframe: str,
-    ) -> DataQualityReport:
+    ) -> tuple[DataQualityReport, pd.DataFrame]:
         """
-        Fuehrt alle 6 Pruefungen durch und gibt einen DataQualityReport zurueck.
+        Fuehrt alle 6 Pruefungen durch.
 
-        Der DataFrame wird dabei bereinigt (in-place Kopie).
-        Bei kritischen Fehlern wird DataQualityError ausgeloest.
+        Returns
+        -------
+        (DataQualityReport, pd.DataFrame)
+            report   – Qualitaetsbericht mit allen Metriken
+            clean_df – Bereinigter DataFrame (Duplikate, NaN, OHLC-Violations entfernt,
+                       kleine Luecken interpoliert)
+
+        Bei kritischen Fehlern (zu viele Luecken, leerer DF) wird DataQualityError ausgeloest.
         """
         warnings: list[str] = []
         errors:   list[str] = []
@@ -183,6 +189,12 @@ class DataValidator:
 
         # ── Pruefung 1: Zeitluecken ──
         missing_candles, df = self._check_gaps(df, timeframe, warnings, errors)
+
+        # ── Abschluss: NaN die durch Interpolation entstanden sind entfernen ──
+        ohlcv_cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+        remaining_nan = df[ohlcv_cols].isna().any(axis=1).sum()
+        if remaining_nan:
+            df = df[~df[ohlcv_cols].isna().any(axis=1)].reset_index(drop=True)
 
         total_candles = len(df)
         expected      = total_candles + missing_candles
@@ -238,7 +250,7 @@ class DataValidator:
                 f"{symbol} {timeframe}"
             )
 
-        return report
+        return report, df
 
     # ── Private Pruefmethoden ─────────────────
 
