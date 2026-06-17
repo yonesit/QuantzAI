@@ -32,6 +32,28 @@ class PipelineError(Exception):
 
 
 # ─────────────────────────────────────────────
+#  Hilfsfunktion: Connector-Output normalisieren
+# ─────────────────────────────────────────────
+
+def _ensure_timestamp_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    MT5Connector/OANDAConnector geben OHLCV-Daten mit einem DatetimeIndex
+    zurueck (kein 'timestamp'-Spalte). DataValidator erwartet aber zwingend
+    eine Spalte namens 'timestamp'. Diese Funktion gleicht das an, egal ob
+    bereits eine Spalte vorhanden ist oder der Zeitstempel im Index steckt.
+    """
+    if "timestamp" in df.columns:
+        return df
+
+    df = df.reset_index()
+    # Der Index heisst nach reset_index() i.d.R. "index" oder bereits "time"/"timestamp"
+    first_col = df.columns[0]
+    if first_col != "timestamp":
+        df = df.rename(columns={first_col: "timestamp"})
+    return df
+
+
+# ─────────────────────────────────────────────
 #  DataPipeline
 # ─────────────────────────────────────────────
 
@@ -118,12 +140,13 @@ class DataPipeline:
 
         # 1. Fetch
         raw_df = self._router.get_ohlcv(symbol, timeframe, start, end)
+        raw_df = _ensure_timestamp_column(raw_df)
         if progress_callback:
             progress_callback(1)
 
         # 2. Validate
         try:
-            clean_df, report = self._validator.validate(raw_df, symbol=symbol, timeframe=timeframe)
+            report, clean_df = self._validator.validate(raw_df, symbol=symbol, timeframe=timeframe)
         except DataQualityError as exc:
             logger.error("Pipeline gestoppt | DataQualityError: {exc}", exc=exc)
             raise PipelineError(f"Datenqualitaet ungenuegend fuer {symbol} {timeframe}: {exc}") from exc
@@ -226,8 +249,9 @@ class DataPipeline:
     def _live_update(self, symbol: str, timeframe: str, lookback_candles: int) -> dict:
         """Ein einzelner Live-Update-Zyklus. Oeffentlich testbar."""
         raw_df = self._router.get_ohlcv_count(symbol, timeframe, count=lookback_candles)
+        raw_df = _ensure_timestamp_column(raw_df)
 
-        clean_df, report = self._validator.validate(raw_df, symbol=symbol, timeframe=timeframe)
+        report, clean_df = self._validator.validate(raw_df, symbol=symbol, timeframe=timeframe)
         self._save_quality_report(report, symbol, timeframe)
 
         features_df = self._feature_builder.build(clean_df)
@@ -286,4 +310,5 @@ class DataPipeline:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report_dict, f, indent=2, default=str)
 
+        logger.info("Quality report saved | {path}", path=path)
         return path
