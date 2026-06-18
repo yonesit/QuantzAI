@@ -85,6 +85,7 @@ class EmergencyHandler:
         alert_sender: AlertSender | None = None,
         audit_log_path: str | Path | None = None,
         _exit_fn=None,
+        audit_log=None,
     ) -> None:
         self._executor    = executor
         self._data_router = data_router
@@ -93,6 +94,7 @@ class EmergencyHandler:
         self._audit_path  = Path(audit_log_path) if audit_log_path else None
         self._exit_fn     = _exit_fn or sys.exit
         self._trading_paused = False
+        self._db_audit    = audit_log
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -326,3 +328,9 @@ class EmergencyHandler:
                     f.write(entry + "\n")
             except OSError as exc:
                 logger.error("Audit-Log schreiben fehlgeschlagen: {exc}", exc=exc)
+
+        if self._db_audit is not None:
+            try:
+                self._db_audit.log_emergency(event_type, {"reason": reason})
+            except Exception as exc:  # noqa: BLE001
+                logger.error("AuditLog DB schreiben fehlgeschlagen: {exc}", exc=exc)

@@ -57,6 +57,7 @@ class OrderExecutor:
         trailing_stop_min_pips: float = 10.0,
         trailing_stop_step_pips: float = 5.0,
         pip_size: float = 0.0001,
+        audit_log=None,
     ) -> None:
         if live_trading_enabled:
             confirm = os.environ.get("CONFIRM_LIVE", "")
@@ -73,6 +74,7 @@ class OrderExecutor:
         self._ts_min_pips = trailing_stop_min_pips
         self._ts_step_pips = trailing_stop_step_pips
         self._pip_size = pip_size
+        self._audit_log = audit_log
 
         # Paper-Trading: In-Memory-Positionen {ticket -> position_dict}
         self._paper_positions: dict[int, dict] = {}
@@ -252,6 +254,8 @@ class OrderExecutor:
             t=ticket, sym=symbol, dir=direction, lot=lot_size,
             sl=sl_price, tp=tp_price,
         )
+        if self._audit_log is not None:
+            self._audit_log.log_order(dict(position))
         return dict(position)
 
     def _close_paper(self, ticket: int) -> dict:
@@ -270,6 +274,8 @@ class OrderExecutor:
         self._write_paper_trades()
 
         logger.info("[PAPER] close_position | ticket={t}", t=ticket)
+        if self._audit_log is not None:
+            self._audit_log.log_order(dict(pos))
         return dict(pos)
 
     def _update_trailing_paper(self, ticket: int, current_price: float) -> None:

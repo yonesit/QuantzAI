@@ -47,10 +47,12 @@ class PositionReconciler:
         connector,
         executor,
         sync_interval_seconds: int = 300,
+        audit_log=None,
     ) -> None:
         self._connector = connector
         self._executor  = executor
         self._interval  = sync_interval_seconds
+        self._audit_log = audit_log
         self._timer: threading.Timer | None = None
         self._incidents: list[dict[str, Any]] = []
 
@@ -95,11 +97,16 @@ class PositionReconciler:
                 t=ticket, sym=pos.get("symbol", "?"),
             )
             self._executor.reconcile_add_position(ticket, pos)
-            self._incidents.append({
-                "type":   "missing_locally",
-                "ticket": ticket,
-                "ts":     _now_iso(),
-            })
+            incident = {"type": "missing_locally", "ticket": ticket, "ts": _now_iso()}
+            self._incidents.append(incident)
+            if self._audit_log is not None:
+                try:
+                    self._audit_log.log_error(
+                        "RECONCILIATION_MISSING_LOCALLY",
+                        {"ticket": ticket, "symbol": pos.get("symbol")},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("AuditLog Reconciler-Fehler: {exc}", exc=exc)
 
         for pos in missing_at_mt5:
             ticket = pos["ticket"]
@@ -109,11 +116,16 @@ class PositionReconciler:
                 t=ticket, sym=pos.get("symbol", "?"),
             )
             self._executor.reconcile_close_position(ticket)
-            self._incidents.append({
-                "type":   "missing_at_mt5",
-                "ticket": ticket,
-                "ts":     _now_iso(),
-            })
+            incident = {"type": "missing_at_mt5", "ticket": ticket, "ts": _now_iso()}
+            self._incidents.append(incident)
+            if self._audit_log is not None:
+                try:
+                    self._audit_log.log_error(
+                        "RECONCILIATION_MISSING_AT_MT5",
+                        {"ticket": ticket, "symbol": pos.get("symbol")},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("AuditLog Reconciler-Fehler: {exc}", exc=exc)
 
         total_incidents = len(missing_locally) + len(missing_at_mt5)
         result = {
