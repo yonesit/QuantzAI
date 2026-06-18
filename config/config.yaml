@@ -41,3 +41,15 @@ risk:
   max_correlation: 0.8
   correlation_window_days: 60
   spread_filter_pips: 3.0
+
+model:
+  confidence_threshold: 0.55
+  walk_forward_train_months: 6
+  walk_forward_test_months: 1
+  monte_carlo_permutations: 100
+  save_dir: models
+  lgbm_params:
+    num_leaves: 31
+    learning_rate: 0.05
+    n_estimators: 100
+    random_state: 42
