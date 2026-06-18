@@ -68,7 +68,7 @@ def mock_router():
 @pytest.fixture
 def mock_validator():
     validator = MagicMock()
-    validator.validate.return_value = (_make_ohlcv_df(), _FakeReport())
+    validator.validate.return_value = (_FakeReport(), _make_ohlcv_df())
     return validator
 
 
@@ -178,7 +178,7 @@ class TestRunBatchMulti:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise DataQualityError("Fehler bei erstem Symbol")
-            return (_make_ohlcv_df(), _FakeReport())
+            return (_FakeReport(), _make_ohlcv_df())
 
         mock_validator.validate.side_effect = side_effect
 
