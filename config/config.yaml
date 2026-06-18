@@ -39,4 +39,5 @@ risk:
   daily_loss_limit_pct: 5.0
   max_drawdown_pct: 15.0
   max_correlation: 0.8
+  correlation_window_days: 60
   spread_filter_pips: 3.0
