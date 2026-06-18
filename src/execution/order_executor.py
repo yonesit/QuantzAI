@@ -189,6 +189,33 @@ class OrderExecutor:
             ]
         return self._get_live_positions()
 
+    # ── Reconciliation-Schnittstelle ──────────────────────────────────────────
+
+    def reconcile_add_position(self, ticket: int, pos: dict) -> None:
+        """
+        Fuegt eine extern bekannte Position in die lokale Verfolgung ein.
+        Wird vom PositionReconciler aufgerufen wenn MT5 eine Position hat,
+        die lokal nicht bekannt ist.
+        """
+        entry = dict(pos)
+        entry["ticket"] = ticket
+        entry.setdefault("status", "open")
+        self._paper_positions[ticket] = entry
+        logger.info("Reconcile: Position {t} lokal registriert ({sym})", t=ticket, sym=entry.get("symbol"))
+
+    def reconcile_close_position(self, ticket: int) -> None:
+        """
+        Markiert eine lokal bekannte Position als extern geschlossen.
+        Wird vom PositionReconciler aufgerufen wenn MT5 die Position
+        nicht mehr kennt (SL/TP getroffen, manuell geschlossen, etc.).
+        """
+        pos = self._paper_positions.get(ticket)
+        if pos is not None:
+            pos["status"] = "closed"
+            logger.info("Reconcile: Position {t} extern geschlossen markiert", t=ticket)
+        else:
+            logger.warning("Reconcile: Position {t} fuer Close-Markierung nicht gefunden", t=ticket)
+
     # ── Paper-Trading ─────────────────────────────────────────────────────────
 
     def _open_paper(

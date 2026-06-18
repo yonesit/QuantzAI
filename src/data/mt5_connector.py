@@ -122,6 +122,18 @@ class MT5Connector:
         self._lock            = threading.Lock()
         self._health_thread:  Optional[threading.Thread] = None
         self._stop_health     = threading.Event()
+        self._reconnect_callbacks: list = []
+
+    def register_reconnect_callback(self, callback) -> None:
+        """Registriert eine Funktion die nach jedem erfolgreichen (Re-)Connect aufgerufen wird."""
+        self._reconnect_callbacks.append(callback)
+
+    def _fire_reconnect_callbacks(self) -> None:
+        for cb in self._reconnect_callbacks:
+            try:
+                cb()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Reconnect-Callback Fehler: {exc}", exc=exc)
 
     # ── Context Manager ──────────────────────────────
 
@@ -168,6 +180,7 @@ class MT5Connector:
                         login=self._login,
                     )
                     self._start_health_check()
+                    self._fire_reconnect_callbacks()
                     return True
 
                 err = mt5.last_error()
@@ -248,6 +261,7 @@ class MT5Connector:
             with self._lock:
                 self._connected = True
             logger.info("MT5 reconnected | login={login}", login=self._login)
+            self._fire_reconnect_callbacks()
         else:
             logger.error(
                 "MT5ConnectionError | reconnect gescheitert | {error}",
