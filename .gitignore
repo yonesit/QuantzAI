@@ -19,8 +19,8 @@ data/features/
 *.parquet
 *.csv
 
-# Modelle
-models/
+# Modelle (nur Root-Verzeichnis, nicht src/models/)
+/models/
 *.pkl
 *.joblib
 
