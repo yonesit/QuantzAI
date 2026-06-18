@@ -53,3 +53,29 @@ model:
     learning_rate: 0.05
     n_estimators: 100
     random_state: 42
+
+# Multi-Konto-Konfiguration
+# Login-Daten fuer jedes Konto stehen in .env, referenziert per account_id:
+#   MT5_LOGIN_<ACCOUNT_ID>, MT5_PASSWORD_<ACCOUNT_ID>, MT5_SERVER_<ACCOUNT_ID>
+accounts:
+  - account_id: demo
+    broker: mt5
+    symbols:
+      - EURUSD
+      - GBPUSD
+    risk:
+      max_risk_per_trade_pct: 1.0
+      daily_loss_limit_pct: 5.0
+      max_drawdown_pct: 15.0
+    paper_trading: true
+
+  - account_id: live_1
+    broker: mt5
+    symbols:
+      - EURUSD
+      - USDJPY
+    risk:
+      max_risk_per_trade_pct: 0.5
+      daily_loss_limit_pct: 3.0
+      max_drawdown_pct: 10.0
+    paper_trading: false
