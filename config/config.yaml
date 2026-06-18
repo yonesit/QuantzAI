@@ -79,3 +79,11 @@ accounts:
       daily_loss_limit_pct: 3.0
       max_drawdown_pct: 10.0
     paper_trading: false
+
+# Anomalie-Erkennung (Rogue-Bot-Schutz)
+anomaly_detection:
+  max_trades_per_window: 10          # Max. Trades im Zeitfenster
+  frequency_window_seconds: 300      # Zeitfenster in Sekunden (5 Min)
+  lot_size_multiplier: 3.0           # Vielfaches des Lots-Durchschnitts
+  max_consecutive_rejections: 5      # Max. aufeinanderfolgende Ablehnungen
+  max_signal_changes_per_minute: 3   # Max. Signalwechsel pro Minute
