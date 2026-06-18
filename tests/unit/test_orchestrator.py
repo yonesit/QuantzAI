@@ -1,0 +1,578 @@
+"""
+tests/unit/test_orchestrator.py
+Unit-Tests fuer TradingOrchestrator.
+
+Abgedeckt:
+  - Jeder Schritt einzeln gemockt (happy path)
+  - Reihenfolge der Schritt-Aufrufe
+  - Abgebrochener Check verhindert alle Folgeschritte
+  - run_loop: Mehrere Symbole, Stop, Exception-Weiterleitung
+  - Graceful Shutdown via stop()
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from unittest.mock import MagicMock, call, patch
+
+import pandas as pd
+import pytest
+
+from src.orchestrator import TradingOrchestrator
+from src.risk.position_sizer import PositionSizeResult
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fixtures / Hilfsfunktionen
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_size_result(lot=0.1, valid=True, rejection=None):
+    return PositionSizeResult(
+        symbol="EURUSD",
+        lot_size=lot,
+        risk_amount=100.0,
+        stop_loss_distance=0.001,
+        is_valid=valid,
+        rejection_reason=rejection,
+    )
+
+
+def _make_features(close=1.09, atr=0.001) -> pd.DataFrame:
+    return pd.DataFrame([{"close": close, "atr": atr}])
+
+
+def _make_orch(
+    signal="long",
+    risk_allowed=True,
+    pre_trade_safe=(True, "ok"),
+    corr_allowed=True,
+    positions=None,
+    size_result=None,
+    open_result=None,
+    features=None,
+    reconciler=True,
+    audit_log=True,
+    emergency=True,
+    balance=10_000.0,
+) -> tuple[TradingOrchestrator, dict]:
+    """Baut einen Orchestrator mit ausschliesslich Mocks."""
+    pipeline    = MagicMock()
+    risk_guard  = MagicMock()
+    pre_trade   = MagicMock()
+    sig_model   = MagicMock()
+    corr_guard  = MagicMock()
+    pos_sizer   = MagicMock()
+    executor    = MagicMock()
+    rec         = MagicMock() if reconciler else None
+    alog        = MagicMock() if audit_log  else None
+    emerg       = MagicMock() if emergency  else None
+
+    pipeline.run_batch.return_value = {"status": "ok"}
+    risk_guard.is_trading_allowed.return_value = risk_allowed
+    risk_guard.get_position_size_multiplier.return_value = 1.0
+    pre_trade.is_safe_to_trade.return_value = pre_trade_safe
+    sig_model.get_signal.return_value = signal
+    corr_guard.can_open_position.return_value = corr_allowed
+    executor.get_open_positions.return_value = positions or []
+    pos_sizer.calculate_lot_size.return_value = size_result or _make_size_result()
+
+    if open_result is None:
+        open_result = {"ticket": 42, "symbol": "EURUSD", "direction": "buy",
+                       "lot_size": 0.1, "status": "open"}
+    executor.open_position.return_value = open_result
+
+    feat_df = features if features is not None else _make_features()
+
+    orch = TradingOrchestrator(
+        data_pipeline=pipeline,
+        risk_guard=risk_guard,
+        pre_trade_check=pre_trade,
+        signal_model=sig_model,
+        correlation_guard=corr_guard,
+        position_sizer=pos_sizer,
+        order_executor=executor,
+        position_reconciler=rec,
+        audit_log=alog,
+        emergency_handler=emerg,
+        features_loader=lambda sym: feat_df,
+        balance_getter=lambda: balance,
+    )
+
+    mocks = {
+        "pipeline": pipeline,
+        "risk_guard": risk_guard,
+        "pre_trade": pre_trade,
+        "sig_model": sig_model,
+        "corr_guard": corr_guard,
+        "pos_sizer": pos_sizer,
+        "executor": executor,
+        "reconciler": rec,
+        "audit_log": alog,
+        "emergency": emerg,
+    }
+    return orch, mocks
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Happy Path
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRunCycleHappyPath:
+
+    def test_returns_dict(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("EURUSD")
+        assert isinstance(result, dict)
+
+    def test_result_has_expected_keys(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("EURUSD")
+        for key in ("symbol", "signal", "action", "reason", "ticket", "lot_size", "step_stopped_at"):
+            assert key in result
+
+    def test_long_signal_opens_buy(self):
+        orch, _ = _make_orch(signal="long")
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+
+    def test_short_signal_opens_sell(self):
+        orch, mocks = _make_orch(signal="short")
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_sell"
+
+    def test_open_position_called_with_direction_buy(self):
+        orch, mocks = _make_orch(signal="long")
+        orch.run_cycle("EURUSD")
+        args = mocks["executor"].open_position.call_args
+        assert args[0][1] == "buy"  # direction positional arg
+
+    def test_open_position_called_with_direction_sell(self):
+        orch, mocks = _make_orch(signal="short")
+        orch.run_cycle("EURUSD")
+        args = mocks["executor"].open_position.call_args
+        assert args[0][1] == "sell"
+
+    def test_ticket_in_result(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("EURUSD")
+        assert result["ticket"] == 42
+
+    def test_lot_size_in_result(self):
+        orch, _ = _make_orch(size_result=_make_size_result(lot=0.2))
+        result = orch.run_cycle("EURUSD")
+        assert result["lot_size"] is not None
+        assert result["lot_size"] > 0
+
+    def test_lot_size_multiplied_by_risk_guard_factor(self):
+        orch, mocks = _make_orch(size_result=_make_size_result(lot=0.2))
+        mocks["risk_guard"].get_position_size_multiplier.return_value = 0.5
+        result = orch.run_cycle("EURUSD")
+        assert result["lot_size"] == pytest.approx(0.1, abs=1e-6)
+
+    def test_step_stopped_at_is_none_on_success(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] is None
+
+    def test_reason_signal_executed_on_success(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "signal_executed"
+
+    def test_audit_log_log_order_called_on_success(self):
+        orch, mocks = _make_orch()
+        orch.run_cycle("EURUSD")
+        mocks["audit_log"].log_order.assert_called_once()
+
+    def test_reconciler_sync_called_on_success(self):
+        orch, mocks = _make_orch()
+        orch.run_cycle("EURUSD")
+        mocks["reconciler"].sync.assert_called_once()
+
+    def test_symbol_in_result(self):
+        orch, _ = _make_orch()
+        result = orch.run_cycle("GBPUSD")
+        assert result["symbol"] == "GBPUSD"
+
+    def test_flat_signal_returns_flat_action(self):
+        orch, _ = _make_orch(signal="flat")
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "flat"
+        assert result["step_stopped_at"] == "flat_signal"
+
+    def test_flat_signal_no_order_placed(self):
+        orch, mocks = _make_orch(signal="flat")
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Schritt-Reihenfolge
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStepOrder:
+
+    def test_pipeline_called_before_risk_guard(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["pipeline"].run_batch.side_effect = lambda *a, **k: call_log.append("pipeline")
+        mocks["risk_guard"].is_trading_allowed.side_effect = lambda: call_log.append("risk") or True
+        orch.run_cycle("EURUSD")
+        assert call_log.index("pipeline") < call_log.index("risk")
+
+    def test_risk_guard_before_pre_trade(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["risk_guard"].is_trading_allowed.side_effect = lambda: call_log.append("risk") or True
+        mocks["pre_trade"].is_safe_to_trade.side_effect = lambda s: call_log.append("pre_trade") or (True, "ok")
+        orch.run_cycle("EURUSD")
+        assert call_log.index("risk") < call_log.index("pre_trade")
+
+    def test_pre_trade_before_signal(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["pre_trade"].is_safe_to_trade.side_effect = lambda s: call_log.append("pre_trade") or (True, "ok")
+        mocks["sig_model"].get_signal.side_effect = lambda *a, **k: call_log.append("signal") or "long"
+        orch.run_cycle("EURUSD")
+        assert call_log.index("pre_trade") < call_log.index("signal")
+
+    def test_signal_before_corr_guard(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["sig_model"].get_signal.side_effect = lambda *a, **k: call_log.append("signal") or "long"
+        mocks["corr_guard"].can_open_position.side_effect = lambda *a: call_log.append("corr") or True
+        orch.run_cycle("EURUSD")
+        assert call_log.index("signal") < call_log.index("corr")
+
+    def test_corr_guard_before_position_sizer(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["corr_guard"].can_open_position.side_effect = lambda *a: call_log.append("corr") or True
+        mocks["pos_sizer"].calculate_lot_size.side_effect = lambda *a, **k: (call_log.append("sizer") or _make_size_result())
+        orch.run_cycle("EURUSD")
+        assert call_log.index("corr") < call_log.index("sizer")
+
+    def test_position_sizer_before_open_position(self):
+        call_log = []
+        orch, mocks = _make_orch()
+        mocks["pos_sizer"].calculate_lot_size.side_effect = lambda *a, **k: (call_log.append("sizer") or _make_size_result())
+        mocks["executor"].open_position.side_effect = lambda *a: (call_log.append("open") or {"ticket": 1})
+        orch.run_cycle("EURUSD")
+        assert call_log.index("sizer") < call_log.index("open")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  RiskGuard blockiert
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRiskGuardBlocks:
+
+    def test_returns_risk_guard_blocked_reason(self):
+        orch, _ = _make_orch(risk_allowed=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "risk_guard_blocked"
+
+    def test_step_stopped_at_risk_guard(self):
+        orch, _ = _make_orch(risk_allowed=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "risk_guard"
+
+    def test_pre_trade_not_called(self):
+        orch, mocks = _make_orch(risk_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["pre_trade"].is_safe_to_trade.assert_not_called()
+
+    def test_signal_model_not_called(self):
+        orch, mocks = _make_orch(risk_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["sig_model"].get_signal.assert_not_called()
+
+    def test_corr_guard_not_called(self):
+        orch, mocks = _make_orch(risk_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["corr_guard"].can_open_position.assert_not_called()
+
+    def test_position_sizer_not_called(self):
+        orch, mocks = _make_orch(risk_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["pos_sizer"].calculate_lot_size.assert_not_called()
+
+    def test_order_executor_not_called(self):
+        orch, mocks = _make_orch(risk_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_action_is_skipped(self):
+        orch, _ = _make_orch(risk_allowed=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "skipped"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PreTradeCheck blockiert
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPreTradeCheckBlocks:
+
+    def test_returns_pre_trade_reason(self):
+        orch, _ = _make_orch(pre_trade_safe=(False, "Spread zu hoch"))
+        result = orch.run_cycle("EURUSD")
+        assert "pre_trade_check_failed" in result["reason"]
+        assert "Spread zu hoch" in result["reason"]
+
+    def test_step_stopped_at_pre_trade(self):
+        orch, _ = _make_orch(pre_trade_safe=(False, "News"))
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "pre_trade_check"
+
+    def test_signal_not_called(self):
+        orch, mocks = _make_orch(pre_trade_safe=(False, "x"))
+        orch.run_cycle("EURUSD")
+        mocks["sig_model"].get_signal.assert_not_called()
+
+    def test_order_not_placed(self):
+        orch, mocks = _make_orch(pre_trade_safe=(False, "x"))
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_risk_guard_was_called(self):
+        orch, mocks = _make_orch(pre_trade_safe=(False, "x"))
+        orch.run_cycle("EURUSD")
+        mocks["risk_guard"].is_trading_allowed.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CorrelationGuard blockiert
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCorrelationGuardBlocks:
+
+    def test_returns_corr_blocked_reason(self):
+        orch, _ = _make_orch(corr_allowed=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "correlation_guard_blocked"
+
+    def test_step_stopped_at_correlation_guard(self):
+        orch, _ = _make_orch(corr_allowed=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "correlation_guard"
+
+    def test_signal_was_computed(self):
+        orch, mocks = _make_orch(corr_allowed=False, signal="long")
+        orch.run_cycle("EURUSD")
+        mocks["sig_model"].get_signal.assert_called_once()
+
+    def test_order_not_placed(self):
+        orch, mocks = _make_orch(corr_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_position_sizer_not_called(self):
+        orch, mocks = _make_orch(corr_allowed=False)
+        orch.run_cycle("EURUSD")
+        mocks["pos_sizer"].calculate_lot_size.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PositionSizer ungueltig
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPositionSizerInvalid:
+
+    def test_returns_sizer_invalid_reason(self):
+        orch, _ = _make_orch(size_result=_make_size_result(valid=False, rejection="Zu klein"))
+        result = orch.run_cycle("EURUSD")
+        assert "position_sizer_invalid" in result["reason"]
+
+    def test_step_stopped_at_position_sizer(self):
+        orch, _ = _make_orch(size_result=_make_size_result(valid=False))
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "position_sizer"
+
+    def test_order_not_placed_when_sizer_invalid(self):
+        orch, mocks = _make_orch(size_result=_make_size_result(valid=False))
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Kein Features-DataFrame (DataPipeline liefert nichts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNoFeaturesAvailable:
+
+    def test_returns_no_features_reason(self):
+        orch, mocks = _make_orch()
+        orch._features_loader = lambda sym: None
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "no_features_available"
+        assert result["step_stopped_at"] == "data_pipeline"
+
+    def test_risk_guard_not_called_when_no_features(self):
+        orch, mocks = _make_orch()
+        orch._features_loader = lambda sym: None
+        orch.run_cycle("EURUSD")
+        mocks["risk_guard"].is_trading_allowed.assert_not_called()
+
+    def test_empty_dataframe_treated_as_no_features(self):
+        orch, _ = _make_orch(features=pd.DataFrame())
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "data_pipeline"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SL/TP-Berechnung
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSlTpCalculation:
+
+    def test_buy_sl_below_close(self):
+        orch, mocks = _make_orch(signal="long")
+        orch.run_cycle("EURUSD")
+        _, _, lot, sl, tp = mocks["executor"].open_position.call_args[0]
+        assert sl < 1.09  # close=1.09
+
+    def test_buy_tp_above_close(self):
+        orch, mocks = _make_orch(signal="long")
+        orch.run_cycle("EURUSD")
+        _, _, lot, sl, tp = mocks["executor"].open_position.call_args[0]
+        assert tp > 1.09
+
+    def test_sell_sl_above_close(self):
+        orch, mocks = _make_orch(signal="short")
+        orch.run_cycle("EURUSD")
+        _, _, lot, sl, tp = mocks["executor"].open_position.call_args[0]
+        assert sl > 1.09
+
+    def test_sell_tp_below_close(self):
+        orch, mocks = _make_orch(signal="short")
+        orch.run_cycle("EURUSD")
+        _, _, lot, sl, tp = mocks["executor"].open_position.call_args[0]
+        assert tp < 1.09
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  run_loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestRunLoop:
+
+    def test_calls_run_cycle_for_each_symbol(self):
+        orch, _ = _make_orch()
+        call_log = []
+        orch.run_cycle = lambda sym: call_log.append(sym) or {}
+
+        thread = threading.Thread(
+            target=orch.run_loop,
+            args=(["EURUSD", "GBPUSD"], 0),
+        )
+        thread.start()
+        time.sleep(0.05)
+        orch.stop()
+        thread.join(timeout=2)
+
+        assert "EURUSD" in call_log
+        assert "GBPUSD" in call_log
+
+    def test_stop_exits_loop(self):
+        orch, _ = _make_orch()
+        orch.run_cycle = lambda sym: {}
+
+        done = threading.Event()
+        def _run():
+            orch.run_loop(["EURUSD"], interval_seconds=60)
+            done.set()
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        time.sleep(0.05)
+        orch.stop()
+        assert done.wait(timeout=3), "run_loop haette nach stop() enden sollen"
+
+    def test_exception_delegated_to_emergency_handler(self):
+        orch, mocks = _make_orch()
+        orch.run_cycle = MagicMock(side_effect=RuntimeError("boom"))
+
+        thread = threading.Thread(
+            target=orch.run_loop,
+            args=(["EURUSD"], 0),
+        )
+        thread.start()
+        time.sleep(0.15)
+        orch.stop()
+        thread.join(timeout=2)
+
+        mocks["emergency"].handle_unhandled_exception.assert_called()
+
+    def test_loop_runs_multiple_iterations(self):
+        orch, _ = _make_orch()
+        counter = {"n": 0}
+
+        def _cycle(sym):
+            counter["n"] += 1
+            if counter["n"] >= 3:
+                orch.stop()
+            return {}
+
+        orch.run_cycle = _cycle
+        orch.run_loop(["EURUSD"], interval_seconds=0)
+        assert counter["n"] >= 3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Graceful Shutdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGracefulShutdown:
+
+    def test_stop_sets_stop_event(self):
+        orch, _ = _make_orch()
+        assert not orch._stop_event.is_set()
+        orch.stop()
+        assert orch._stop_event.is_set()
+
+    def test_second_stop_is_idempotent(self):
+        orch, _ = _make_orch()
+        orch.stop()
+        orch.stop()
+        assert orch._stop_event.is_set()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Optionale Komponenten (None)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOptionalComponents:
+
+    def test_no_reconciler_still_works(self):
+        orch, _ = _make_orch(reconciler=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+
+    def test_no_audit_log_still_works(self):
+        orch, _ = _make_orch(audit_log=False)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+
+    def test_no_emergency_handler_reraises(self):
+        orch, mocks = _make_orch(emergency=False)
+        orch.run_cycle = MagicMock(side_effect=RuntimeError("fatal"))
+
+        with pytest.raises(RuntimeError, match="fatal"):
+            orch.run_loop(["EURUSD"], interval_seconds=0)
+
+    def test_default_balance_used_when_no_getter(self):
+        orch, mocks = _make_orch()
+        orch._balance_getter = None
+        orch.run_cycle("EURUSD")
+        # PositionSizer muss mit 10000.0 aufgerufen worden sein
+        call_args = mocks["pos_sizer"].calculate_lot_size.call_args
+        assert call_args[0][0] == 10_000.0
+
+    def test_corr_guard_receives_open_positions(self):
+        pos = [{"ticket": 1, "symbol": "GBPUSD", "direction": "buy"}]
+        orch, mocks = _make_orch(positions=pos)
+        orch.run_cycle("EURUSD")
+        call_args = mocks["corr_guard"].can_open_position.call_args
+        assert call_args[0][2] == pos
