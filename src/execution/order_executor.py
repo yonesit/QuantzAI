@@ -58,6 +58,7 @@ class OrderExecutor:
         trailing_stop_step_pips: float = 5.0,
         pip_size: float = 0.0001,
         audit_log=None,
+        trade_journal=None,
     ) -> None:
         if live_trading_enabled:
             confirm = os.environ.get("CONFIRM_LIVE", "")
@@ -75,10 +76,13 @@ class OrderExecutor:
         self._ts_step_pips = trailing_stop_step_pips
         self._pip_size = pip_size
         self._audit_log = audit_log
+        self._trade_journal = trade_journal
 
         # Paper-Trading: In-Memory-Positionen {ticket -> position_dict}
         self._paper_positions: dict[int, dict] = {}
         self._next_ticket: int = 1
+        # Live-Trading: Ticket -> Journal-Trade-ID fuer spaeteres Close
+        self._journal_ticket_map: dict[int, int] = {}
 
         logger.info(
             "OrderExecutor | live={live} | trailing_min={tmin}p step={tstep}p",
@@ -256,6 +260,14 @@ class OrderExecutor:
         )
         if self._audit_log is not None:
             self._audit_log.log_order(dict(position))
+        if self._trade_journal is not None:
+            journal_id = self._trade_journal.log_trade_open({
+                "symbol":    symbol,
+                "direction": direction,
+                "lot_size":  lot_size,
+                "entry_time": now,
+            })
+            self._paper_positions[ticket]["journal_id"] = journal_id
         return dict(position)
 
     def _close_paper(self, ticket: int) -> dict:
@@ -276,6 +288,10 @@ class OrderExecutor:
         logger.info("[PAPER] close_position | ticket={t}", t=ticket)
         if self._audit_log is not None:
             self._audit_log.log_order(dict(pos))
+        if self._trade_journal is not None:
+            journal_id = pos.get("journal_id")
+            if journal_id is not None:
+                self._trade_journal.log_trade_close(journal_id, {"exit_time": now})
         return dict(pos)
 
     def _update_trailing_paper(self, ticket: int, current_price: float) -> None:
@@ -348,6 +364,14 @@ class OrderExecutor:
             "[LIVE] open_position | ticket={t} {sym} {dir} {lot} lots",
             t=ticket, sym=symbol, dir=direction, lot=lot_size,
         )
+        if self._trade_journal is not None:
+            journal_id = self._trade_journal.log_trade_open({
+                "symbol":      symbol,
+                "direction":   direction,
+                "lot_size":    lot_size,
+                "entry_price": trade.get("open_price"),
+            })
+            self._journal_ticket_map[ticket] = journal_id
         return trade
 
     def _close_live(self, ticket: int) -> dict:
@@ -390,6 +414,12 @@ class OrderExecutor:
             "status":      "closed",
         }
         logger.info("[LIVE] close_position | ticket={t}", t=ticket)
+        if self._trade_journal is not None:
+            journal_id = self._journal_ticket_map.pop(ticket, None)
+            if journal_id is not None:
+                self._trade_journal.log_trade_close(
+                    journal_id, {"exit_price": trade.get("close_price")}
+                )
         return trade
 
     def _update_trailing_live(self, ticket: int, current_price: float) -> None:
