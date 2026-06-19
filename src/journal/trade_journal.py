@@ -167,6 +167,28 @@ class TradeJournal:
 
     # ── Lese- und Statistik-Methoden ─────────────────────────────────────────
 
+    def get_trade(self, trade_id: int) -> Optional[dict]:
+        """
+        Liest einen einzelnen Trade aus der DB.
+
+        Parameters
+        ----------
+        trade_id : Trade-ID aus log_trade_open().
+
+        Returns
+        -------
+        dict mit allen Spalten, oder None wenn trade_id nicht gefunden.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM trades WHERE id = ?", (trade_id,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
     def calculate_stats(
         self,
         start_date: DateLike,
