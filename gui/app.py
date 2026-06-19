@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from gui.design.theme import ThemeManager, ThemeMode, get_theme_manager
 from gui.views.cockpit_view import CockpitBackend, CockpitView
 from gui.views.dashboard_view import DashboardBackend, DashboardView
+from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ class _CockpitPlaceholderView(_PlaceholderView):
         super().__init__("🎮  Cockpit", parent)
 
 
-class RiskView(_PlaceholderView):
+class _RiskPlaceholderView(_PlaceholderView):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("🛡  Risiko", parent)
 
@@ -131,7 +132,6 @@ class SettingsView(_PlaceholderView):
 
 
 _PLACEHOLDER_VIEWS: dict[Section, type[_PlaceholderView]] = {
-    Section.RISK:     RiskView,
     Section.JOURNAL:  JournalView,
     Section.BACKTEST: BacktestView,
     Section.SETTINGS: SettingsView,
@@ -430,18 +430,20 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        theme_manager:     Optional[ThemeManager]    = None,
-        dashboard_backend: Optional[DashboardBackend] = None,
-        cockpit_backend:   Optional[CockpitBackend]  = None,
-        parent:            Optional[QWidget]          = None,
+        theme_manager:        Optional[ThemeManager]        = None,
+        dashboard_backend:    Optional[DashboardBackend]    = None,
+        cockpit_backend:      Optional[CockpitBackend]      = None,
+        risk_center_backend:  Optional[RiskCenterBackend]   = None,
+        parent:               Optional[QWidget]             = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("QuantzAI")
         self.setMinimumSize(1366, 768)
 
-        self._theme             = theme_manager if theme_manager is not None else get_theme_manager()
-        self._dashboard_backend = dashboard_backend
-        self._cockpit_backend   = cockpit_backend
+        self._theme               = theme_manager if theme_manager is not None else get_theme_manager()
+        self._dashboard_backend   = dashboard_backend
+        self._cockpit_backend     = cockpit_backend
+        self._risk_center_backend = risk_center_backend
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -479,6 +481,11 @@ class MainWindow(QMainWindow):
         self._cockpit_view = CockpitView(backend=self._cockpit_backend)
         self._views[Section.COCKPIT] = self._cockpit_view
         self._content.addWidget(self._cockpit_view)
+
+        # Risiko-Zentrale: echter View mit optionalem Backend
+        self._risk_center_view = RiskCenterView(backend=self._risk_center_backend)
+        self._views[Section.RISK] = self._risk_center_view
+        self._content.addWidget(self._risk_center_view)
 
         # Restliche Sektionen: Placeholder-Views
         for section, ViewClass in _PLACEHOLDER_VIEWS.items():
@@ -523,6 +530,10 @@ class MainWindow(QMainWindow):
     @property
     def cockpit_view(self) -> CockpitView:
         return self._cockpit_view
+
+    @property
+    def risk_center_view(self) -> RiskCenterView:
+        return self._risk_center_view
 
     def navigate_to(self, section: Section) -> None:
         """Navigiert programmatisch zu einer Sektion."""
