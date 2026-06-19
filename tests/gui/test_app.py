@@ -35,6 +35,9 @@ Gepruefte Bereiche:
 
 from __future__ import annotations
 
+import os
+from unittest.mock import MagicMock
+
 import pytest
 from pytestqt.qtbot import QtBot
 
@@ -46,6 +49,8 @@ from gui.app import (
     Section,
     TradingMode,
     TradingStatusBar,
+    _load_env_file,
+    _try_connect_mt5,
 )
 from gui.design.theme import ThemeManager, ThemeMode
 
@@ -346,3 +351,223 @@ class TestConfirmationDialog:
         buttons = dlg.findChildren(QPushButton)
         labels = [b.text() for b in buttons]
         assert "Abbrechen" in labels
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _load_env_file
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLoadEnvFile:
+
+    def test_loads_key_value(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("TEST_LOAD_KEY=hello\n", encoding="utf-8")
+        monkeypatch.delenv("TEST_LOAD_KEY", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("TEST_LOAD_KEY") == "hello"
+
+    def test_skips_comment_lines(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("# This is a comment\nKEY_NO_COMMENT=val\n", encoding="utf-8")
+        monkeypatch.delenv("KEY_NO_COMMENT", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("KEY_NO_COMMENT") == "val"
+
+    def test_skips_empty_lines(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("\n\nKEY_EMPTY=42\n\n", encoding="utf-8")
+        monkeypatch.delenv("KEY_EMPTY", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("KEY_EMPTY") == "42"
+
+    def test_missing_file_no_crash(self):
+        _load_env_file("/nonexistent/path/.env")
+
+    def test_does_not_overwrite_existing(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("EXISTING_KEY=fromfile\n", encoding="utf-8")
+        monkeypatch.setenv("EXISTING_KEY", "original")
+        _load_env_file(str(env_file))
+        assert os.environ.get("EXISTING_KEY") == "original"
+
+    def test_strips_double_quotes(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text('QUOTED_KEY="my value"\n', encoding="utf-8")
+        monkeypatch.delenv("QUOTED_KEY", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("QUOTED_KEY") == "my value"
+
+    def test_strips_single_quotes(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("SINGLE_KEY='my value'\n", encoding="utf-8")
+        monkeypatch.delenv("SINGLE_KEY", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("SINGLE_KEY") == "my value"
+
+    def test_value_with_equals_sign(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("EQ_KEY=a=b=c\n", encoding="utf-8")
+        monkeypatch.delenv("EQ_KEY", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("EQ_KEY") == "a=b=c"
+
+    def test_multiple_keys(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("MULTI_A=1\nMULTI_B=2\n", encoding="utf-8")
+        monkeypatch.delenv("MULTI_A", raising=False)
+        monkeypatch.delenv("MULTI_B", raising=False)
+        _load_env_file(str(env_file))
+        assert os.environ.get("MULTI_A") == "1"
+        assert os.environ.get("MULTI_B") == "2"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _try_connect_mt5
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTryConnectMT5:
+
+    @pytest.fixture(autouse=True)
+    def no_env_file(self, monkeypatch):
+        """Prevent the real .env from being loaded during any test in this class."""
+        monkeypatch.setattr("gui.app._load_env_file", lambda *a, **kw: None)
+
+    def _bar(self, qtbot):
+        bar = TradingStatusBar()
+        qtbot.addWidget(bar)
+        return bar
+
+    def test_no_credentials_returns_none(self, qtbot, monkeypatch):
+        monkeypatch.delenv("MT5_LOGIN",    raising=False)
+        monkeypatch.delenv("MT5_PASSWORD", raising=False)
+        monkeypatch.delenv("MT5_SERVER",   raising=False)
+        result = _try_connect_mt5(self._bar(qtbot))
+        assert result is None
+
+    def test_no_credentials_status_unchanged(self, qtbot, monkeypatch):
+        monkeypatch.delenv("MT5_LOGIN",    raising=False)
+        monkeypatch.delenv("MT5_PASSWORD", raising=False)
+        monkeypatch.delenv("MT5_SERVER",   raising=False)
+        bar = self._bar(qtbot)
+        _try_connect_mt5(bar)
+        assert bar.connection_status is ConnectionStatus.DISCONNECTED
+
+    def test_missing_password_skips_connect(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",  "12345")
+        monkeypatch.delenv("MT5_PASSWORD", raising=False)
+        monkeypatch.setenv("MT5_SERVER", "srv")
+        calls = []
+        _try_connect_mt5(self._bar(qtbot), _connector_factory=lambda *a: calls.append(a))
+        assert calls == []
+
+    def test_missing_server_skips_connect(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "pw")
+        monkeypatch.delenv("MT5_SERVER", raising=False)
+        result = _try_connect_mt5(self._bar(qtbot))
+        assert result is None
+
+    def test_invalid_login_returns_none(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "notanumber")
+        monkeypatch.setenv("MT5_PASSWORD", "pw")
+        monkeypatch.setenv("MT5_SERVER",   "srv")
+        result = _try_connect_mt5(self._bar(qtbot))
+        assert result is None
+
+    def test_invalid_login_status_unchanged(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "abc")
+        monkeypatch.setenv("MT5_PASSWORD", "pw")
+        monkeypatch.setenv("MT5_SERVER",   "srv")
+        bar = self._bar(qtbot)
+        _try_connect_mt5(bar)
+        assert bar.connection_status is ConnectionStatus.DISCONNECTED
+
+    def test_success_returns_connector(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "secret")
+        monkeypatch.setenv("MT5_SERVER",   "DemoServer")
+        mock = MagicMock()
+        result = _try_connect_mt5(self._bar(qtbot), _connector_factory=lambda *a: mock)
+        assert result is mock
+
+    def test_success_sets_connected(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "secret")
+        monkeypatch.setenv("MT5_SERVER",   "DemoServer")
+        mock = MagicMock()
+        bar = self._bar(qtbot)
+        _try_connect_mt5(bar, _connector_factory=lambda *a: mock)
+        assert bar.connection_status is ConnectionStatus.CONNECTED
+
+    def test_connect_raises_sets_error(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "secret")
+        monkeypatch.setenv("MT5_SERVER",   "DemoServer")
+
+        def factory(*args):
+            raise RuntimeError("MT5 nicht erreichbar")
+
+        bar = self._bar(qtbot)
+        _try_connect_mt5(bar, _connector_factory=factory)
+        assert bar.connection_status is ConnectionStatus.ERROR
+
+    def test_connect_raises_returns_none(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "secret")
+        monkeypatch.setenv("MT5_SERVER",   "DemoServer")
+
+        def factory(*args):
+            raise RuntimeError("crash")
+
+        result = _try_connect_mt5(self._bar(qtbot), _connector_factory=factory)
+        assert result is None
+
+    def test_exception_never_propagates(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "12345")
+        monkeypatch.setenv("MT5_PASSWORD", "pw")
+        monkeypatch.setenv("MT5_SERVER",   "srv")
+
+        def factory(*args):
+            raise SystemError("hard crash")
+
+        _try_connect_mt5(self._bar(qtbot), _connector_factory=factory)  # must not raise
+
+    def test_factory_receives_correct_login(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "99999")
+        monkeypatch.setenv("MT5_PASSWORD", "mypass")
+        monkeypatch.setenv("MT5_SERVER",   "ICMarkets-Demo")
+        monkeypatch.delenv("MT5_PATH", raising=False)
+        received: dict = {}
+
+        def factory(login, password, server, path):
+            received.update(login=login, password=password,
+                            server=server, path=path)
+            return MagicMock()
+
+        _try_connect_mt5(self._bar(qtbot), _connector_factory=factory)
+        assert received["login"]    == 99999
+        assert received["password"] == "mypass"
+        assert received["server"]   == "ICMarkets-Demo"
+        assert received["path"]     is None
+
+    def test_factory_receives_mt5_path(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "1")
+        monkeypatch.setenv("MT5_PASSWORD", "p")
+        monkeypatch.setenv("MT5_SERVER",   "s")
+        monkeypatch.setenv("MT5_PATH",     "C:/MT5/terminal64.exe")
+        received: dict = {}
+
+        def factory(login, password, server, path):
+            received["path"] = path
+            return MagicMock()
+
+        _try_connect_mt5(self._bar(qtbot), _connector_factory=factory)
+        assert received["path"] == "C:/MT5/terminal64.exe"
+
+    def test_connect_method_called(self, qtbot, monkeypatch):
+        monkeypatch.setenv("MT5_LOGIN",    "1")
+        monkeypatch.setenv("MT5_PASSWORD", "p")
+        monkeypatch.setenv("MT5_SERVER",   "s")
+        mock = MagicMock()
+        _try_connect_mt5(self._bar(qtbot), _connector_factory=lambda *a: mock)
+        mock.connect.assert_called_once()

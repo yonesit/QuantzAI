@@ -16,9 +16,13 @@ HCI-Prinzipien:
 
 from __future__ import annotations
 
+import os
 import sys
 from enum import Enum, auto
-from typing import Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from loguru import logger
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
@@ -570,6 +574,115 @@ class MainWindow(QMainWindow):
 #  Einstiegspunkt
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  MT5-Startup-Hilfsfunktionen
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_env_file(env_path: str = ".env") -> None:
+    """
+    Laedt eine .env-Datei in os.environ (setzt nur noch nicht gesetzte Variablen).
+
+    Unterstuetzt:
+      KEY=value          – einfache Zuweisung
+      KEY="value"        – einfache/doppelte Anführungszeichen werden entfernt
+      # Kommentar        – wird uebersprungen
+      Leerzeilen         – werden uebersprungen
+
+    Keine externe Abhaengigkeit (kein python-dotenv erforderlich).
+    """
+    path = Path(env_path)
+    if not path.exists():
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                    val = val[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError as exc:
+        logger.debug(".env konnte nicht gelesen werden: {exc}", exc=exc)
+
+
+def _try_connect_mt5(
+    status_bar: "TradingStatusBar",
+    _connector_factory: Optional[Callable[..., Any]] = None,
+    _env_path: str = ".env",
+) -> Optional[Any]:
+    """
+    Versucht beim App-Start eine MT5-Verbindung aufzubauen.
+
+    Liest MT5_LOGIN, MT5_PASSWORD, MT5_SERVER (und optional MT5_PATH)
+    aus os.environ (zuvor wird .env geladen).
+
+    Aktualisiert die TradingStatusBar:
+      - CONNECTED  bei Erfolg
+      - ERROR      wenn Zugangsdaten vorhanden aber Verbindung fehlschlaegt
+      - (unveraendert DISCONNECTED wenn Zugangsdaten fehlen)
+
+    Wirft nie – alle Ausnahmen werden abgefangen und geloggt.
+
+    Parameters
+    ----------
+    status_bar          : TradingStatusBar-Instanz des MainWindow.
+    _connector_factory  : Optionale Factory (login, password, server, path) -> connector.
+                          Nur fuer Tests; Standard ist MT5Connector.
+
+    Returns
+    -------
+    MT5Connector-Instanz bei Erfolg, None sonst.
+    """
+    _load_env_file(_env_path)
+
+    login_str = os.environ.get("MT5_LOGIN",    "").strip()
+    password  = os.environ.get("MT5_PASSWORD", "").strip()
+    server    = os.environ.get("MT5_SERVER",   "").strip()
+    path      = os.environ.get("MT5_PATH",     "").strip() or None
+
+    if not login_str or not password or not server:
+        logger.info("MT5-Startup: Zugangsdaten unvollstaendig – Verbindung uebersprungen.")
+        return None
+
+    try:
+        login = int(login_str)
+    except ValueError:
+        logger.warning(
+            "MT5-Startup: MT5_LOGIN ist keine gueltige Zahl: '{v}'", v=login_str
+        )
+        return None
+
+    try:
+        if _connector_factory is not None:
+            connector = _connector_factory(login, password, server, path)
+        else:
+            from src.data.mt5_connector import MT5Connector  # lazy – kein Pflicht-Import
+            connector = MT5Connector(
+                login=login,
+                password=password,
+                server=server,
+                path=path,
+                max_retries=1,
+            )
+
+        connector.connect()
+        status_bar.set_connection(ConnectionStatus.CONNECTED)
+        logger.info(
+            "MT5-Startup: Verbunden | server={s} login={l}", s=server, l=login
+        )
+        return connector
+
+    except Exception as exc:  # noqa: BLE001
+        status_bar.set_connection(ConnectionStatus.ERROR)
+        logger.warning("MT5-Startup: Verbindung fehlgeschlagen: {exc}", exc=exc)
+        return None
+
+
 def create_app(argv: list[str] | None = None) -> QApplication:
     """Erstellt und konfiguriert die QApplication."""
     app = QApplication(argv if argv is not None else sys.argv)
@@ -584,6 +697,7 @@ def main() -> int:
     app = create_app()
     window = MainWindow()
     window.show()
+    _try_connect_mt5(window.trading_status_bar)
     return app.exec()
 
 
