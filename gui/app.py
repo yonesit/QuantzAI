@@ -44,6 +44,7 @@ from gui.views.cockpit_view import CockpitBackend, CockpitView
 from gui.views.dashboard_view import DashboardBackend, DashboardView
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
+from gui.views.settings_view import SettingsBackend, SettingsView
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,14 +129,12 @@ class _BacktestPlaceholderView(_PlaceholderView):
         super().__init__("📈  Backtest", parent)
 
 
-class SettingsView(_PlaceholderView):
+class _SettingsPlaceholderView(_PlaceholderView):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("⚙  Einstellungen", parent)
 
 
-_PLACEHOLDER_VIEWS: dict[Section, type[_PlaceholderView]] = {
-    Section.SETTINGS: SettingsView,
-}
+_PLACEHOLDER_VIEWS: dict[Section, type[_PlaceholderView]] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -436,6 +435,7 @@ class MainWindow(QMainWindow):
         risk_center_backend:  Optional[RiskCenterBackend]   = None,
         journal_backend:      Optional[JournalBackend]      = None,
         backtest_backend:     Optional[BacktestBackend]     = None,
+        settings_backend:     Optional[SettingsBackend]     = None,
         parent:               Optional[QWidget]             = None,
     ) -> None:
         super().__init__(parent)
@@ -448,6 +448,7 @@ class MainWindow(QMainWindow):
         self._risk_center_backend = risk_center_backend
         self._journal_backend     = journal_backend
         self._backtest_backend    = backtest_backend
+        self._settings_backend    = settings_backend
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -501,11 +502,10 @@ class MainWindow(QMainWindow):
         self._views[Section.BACKTEST] = self._backtest_view
         self._content.addWidget(self._backtest_view)
 
-        # Restliche Sektionen: Placeholder-Views
-        for section, ViewClass in _PLACEHOLDER_VIEWS.items():
-            view = ViewClass()
-            self._views[section] = view
-            self._content.addWidget(view)
+        # Einstellungen: echter View mit optionalem Backend
+        self._settings_view = SettingsView(backend=self._settings_backend)
+        self._views[Section.SETTINGS] = self._settings_view
+        self._content.addWidget(self._settings_view)
 
         root.addWidget(self._content, stretch=1)
 
@@ -556,6 +556,10 @@ class MainWindow(QMainWindow):
     @property
     def backtest_view(self) -> BacktestView:
         return self._backtest_view
+
+    @property
+    def settings_view(self) -> SettingsView:
+        return self._settings_view
 
     def navigate_to(self, section: Section) -> None:
         """Navigiert programmatisch zu einer Sektion."""
