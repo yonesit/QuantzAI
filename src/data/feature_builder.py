@@ -1,8 +1,8 @@
 ﻿"""
 src/data/feature_builder.py
-FeatureBuilder â€“ erzeugt eine saubere Feature-Matrix aus OHLCV-Daten.
+FeatureBuilder â€" erzeugt eine saubere Feature-Matrix aus OHLCV-Daten.
 
-Indikatoren (alle mit .shift(1) â€“ kein Look-ahead Bias):
+Indikatoren (alle mit .shift(1) â€" kein Look-ahead Bias):
   Trend:       EMA (9,20,50,200), SMA (20,50), MACD (12,26,9), ADX (14)
   Momentum:    RSI (14), Stochastic (14,3,3), CCI (20), Williams %R (14)
   Volatilitaet: ATR (14), Bollinger Bands (20,2), Keltner Channel (20,2)
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 import numpy as np
@@ -40,17 +40,17 @@ from ta.volatility import (
 from ta.volume import OnBalanceVolumeIndicator
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 #  Exceptions
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class FeatureBuilderError(Exception):
     """Wird ausgeloest wenn Feature-Berechnung fehlschlaegt."""
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 #  FeatureBuilder
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 class FeatureBuilder:
     """
@@ -101,6 +101,8 @@ class FeatureBuilder:
         keltner_atr_mult:     float = 2.0,
         warmup_candles:       int   = 200,
         include_time_features: bool = True,
+        include_sentiment:    bool  = False,
+        sentiment_feature:    Optional[Any] = None,
         feature_dir:          Optional[str | Path] = None,
     ) -> None:
         self.ema_periods          = ema_periods   or [9, 20, 50, 200]
@@ -122,9 +124,11 @@ class FeatureBuilder:
         self.keltner_atr_mult     = keltner_atr_mult
         self.warmup_candles       = warmup_candles
         self.include_time_features = include_time_features
+        self.include_sentiment    = include_sentiment
+        self._sentiment_feature   = sentiment_feature
         self.feature_dir          = Path(feature_dir) if feature_dir else None
 
-    # â”€â”€ Factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Factory â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     @classmethod
     def from_config(cls, config_path: str | Path) -> "FeatureBuilder":
@@ -141,9 +145,10 @@ class FeatureBuilder:
             bollinger_std         = ft.get("bollinger_std", 2),
             warmup_candles        = ft.get("warmup_candles", 200),
             include_time_features = ft.get("include_time_features", True),
+            include_sentiment     = ft.get("include_sentiment", False),
         )
 
-    # â”€â”€ Oeffentliche Methode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Oeffentliche Methode â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     def build(
         self,
@@ -183,7 +188,7 @@ class FeatureBuilder:
         features = pd.DataFrame(index=df.index)
         features["timestamp"] = df["timestamp"]
 
-        # â”€â”€ Trend-Indikatoren â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Trend-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         for p in self.ema_periods:
             features[f"ema_{p}"] = (
@@ -211,7 +216,7 @@ class FeatureBuilder:
         features["adx_pos"] = adx.adx_pos().shift(1)
         features["adx_neg"] = adx.adx_neg().shift(1)
 
-        # â”€â”€ Momentum-Indikatoren â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Momentum-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         for p in self.rsi_periods:
             features[f"rsi_{p}"] = (
@@ -237,7 +242,7 @@ class FeatureBuilder:
                                lbp=self.williams_period, fillna=False).williams_r().shift(1)
         )
 
-        # â”€â”€ Volatilitaets-Indikatoren â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Volatilitaets-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         features[f"atr_{self.atr_period}"] = (
             AverageTrueRange(high=high, low=low, close=close,
@@ -267,15 +272,15 @@ class FeatureBuilder:
         features["kc_mid"]   = kc.keltner_channel_mband().shift(1)
         features["kc_lower"] = kc.keltner_channel_lband().shift(1)
 
-        # â”€â”€ Volumen-Indikatoren â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Volumen-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         features["obv"] = (
             OnBalanceVolumeIndicator(close=close, volume=volume, fillna=False)
             .on_balance_volume().shift(1)
         )
 
-        # â”€â”€ Abgeleitete Features â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        # KEIN shift() â€“ werden aus aktueller Candle berechnet (kein Zukunftswissen)
+        # â"€â"€ Abgeleitete Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+        # KEIN shift() â€" werden aus aktueller Candle berechnet (kein Zukunftswissen)
 
         features["candle_body"]      = (close - open_).abs()
         features["candle_direction"] = np.sign(close - open_).astype(int)
@@ -288,14 +293,28 @@ class FeatureBuilder:
             0.5,
         )
 
-        # â”€â”€ Zeit-Features â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Zeit-Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         if self.include_time_features:
             ts = pd.DatetimeIndex(df["timestamp"])
             features["hour_of_day"] = ts.hour
             features["day_of_week"] = ts.dayofweek   # 0=Mo, 4=Fr
 
-        # â”€â”€ Warmup entfernen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Sentiment-Feature (optional, via features.include_sentiment: true) ─
+
+        if self.include_sentiment:
+            if self._sentiment_feature is not None:
+                try:
+                    sentiment_dict = self._sentiment_feature.build_feature(symbol)
+                    score = float(sentiment_dict.get("sentiment_score", 0.0))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("SentimentFeature fehlgeschlagen: {exc}", exc=exc)
+                    score = 0.0
+            else:
+                score = 0.0
+            features["sentiment_score"] = score
+
+        # â"€â"€ Warmup entfernen â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         features = features.iloc[self.warmup_candles:].reset_index(drop=True)
 
@@ -306,14 +325,14 @@ class FeatureBuilder:
             rows=len(features), cols=n_features,
         )
 
-        # â”€â”€ Parquet speichern â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Parquet speichern â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         if save and self.feature_dir:
             self._save_parquet(features, symbol, timeframe)
 
         return features
 
-    # â”€â”€ Private Methoden â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Private Methoden â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
     def _save_parquet(
         self, df: pd.DataFrame, symbol: str, timeframe: str
@@ -348,5 +367,7 @@ class FeatureBuilder:
                   "high_low_range", "close_position"]
         if self.include_time_features:
             names += ["hour_of_day", "day_of_week"]
+        if self.include_sentiment:
+            names.append("sentiment_score")
         return names
 

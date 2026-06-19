@@ -366,3 +366,147 @@ class TestFeatureNamesProperty:
         df_features = [c for c in result.columns if c != "timestamp"]
         for name in fb.feature_names:
             assert name in df_features, f"'{name}' in feature_names aber nicht im DataFrame"
+
+
+# ─────────────────────────────────────────────
+#  Tests: Sentiment-Integration (Issue #8)
+# ─────────────────────────────────────────────
+
+class _FakeSentimentFeature:
+    """Stub der SentimentFeature – kein Netz, kein FinBERT."""
+
+    def __init__(self, score: float = 0.4):
+        self._score = score
+        self.calls: list[str] = []
+
+    def build_feature(self, symbol: str) -> dict:
+        self.calls.append(symbol)
+        return {"sentiment_score": self._score}
+
+
+class TestSentimentIntegration:
+
+    def test_sentiment_absent_by_default(self, fb, ohlcv):
+        result = fb.build(ohlcv)
+        assert "sentiment_score" not in result.columns
+
+    def test_sentiment_column_added_when_enabled(self, ohlcv):
+        stub = _FakeSentimentFeature(score=0.3)
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=stub,
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        assert "sentiment_score" in result.columns
+
+    def test_sentiment_value_from_feature(self, ohlcv):
+        stub = _FakeSentimentFeature(score=0.75)
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=stub,
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        assert (result["sentiment_score"] - 0.75).abs().max() < 1e-9
+
+    def test_sentiment_zero_without_feature_instance(self, ohlcv):
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=None,
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        assert "sentiment_score" in result.columns
+        assert (result["sentiment_score"] == 0.0).all()
+
+    def test_sentiment_within_bounds(self, ohlcv):
+        stub = _FakeSentimentFeature(score=-0.9)
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=stub,
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        s = result["sentiment_score"]
+        assert (s >= -1.0).all() and (s <= 1.0).all()
+
+    def test_sentiment_symbol_passed_to_feature(self, ohlcv):
+        stub = _FakeSentimentFeature()
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=stub,
+        )
+        fb.build(ohlcv, symbol="GBPUSD")
+        assert stub.calls == ["GBPUSD"]
+
+    def test_sentiment_error_falls_back_to_zero(self, ohlcv):
+        class _BrokenFeature:
+            def build_feature(self, symbol):
+                raise RuntimeError("network down")
+
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=_BrokenFeature(),
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        assert (result["sentiment_score"] == 0.0).all()
+
+    def test_feature_names_includes_sentiment_when_enabled(self, ohlcv):
+        fb = FeatureBuilder(warmup_candles=210, include_sentiment=True)
+        assert "sentiment_score" in fb.feature_names
+
+    def test_feature_names_excludes_sentiment_by_default(self, fb):
+        assert "sentiment_score" not in fb.feature_names
+
+    def test_feature_names_match_df_with_sentiment(self, ohlcv):
+        stub = _FakeSentimentFeature(score=0.1)
+        fb = FeatureBuilder(
+            warmup_candles=210,
+            include_sentiment=True,
+            sentiment_feature=stub,
+        )
+        result = fb.build(ohlcv, symbol="EURUSD")
+        df_cols = [c for c in result.columns if c != "timestamp"]
+        for name in fb.feature_names:
+            assert name in df_cols, f"'{name}' in feature_names aber nicht im DataFrame"
+
+    def test_from_config_reads_include_sentiment_false(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "features:\n"
+            "  warmup_candles: 50\n"
+            "  include_sentiment: false\n",
+            encoding="utf-8",
+        )
+        fb = FeatureBuilder.from_config(cfg)
+        assert fb.include_sentiment is False
+
+    def test_from_config_reads_include_sentiment_true(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "features:\n"
+            "  warmup_candles: 50\n"
+            "  include_sentiment: true\n",
+            encoding="utf-8",
+        )
+        fb = FeatureBuilder.from_config(cfg)
+        assert fb.include_sentiment is True
+
+    def test_from_config_sentiment_defaults_to_false(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("features: {}\n", encoding="utf-8")
+        fb = FeatureBuilder.from_config(cfg)
+        assert fb.include_sentiment is False
+
+    def test_real_config_yaml_has_include_sentiment(self):
+        import yaml
+        from pathlib import Path
+        config_path = Path("config/config.yaml")
+        if not config_path.exists():
+            pytest.skip("config/config.yaml nicht gefunden")
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        assert "include_sentiment" in cfg.get("features", {})
