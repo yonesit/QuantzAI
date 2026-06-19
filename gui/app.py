@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.design.theme import ThemeManager, ThemeMode, get_theme_manager
+from gui.views.dashboard_view import DashboardBackend, DashboardView
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,11 +104,6 @@ class _PlaceholderView(QWidget):
         layout.addWidget(sub)
 
 
-class DashboardView(_PlaceholderView):
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__("📊  Dashboard", parent)
-
-
 class CockpitView(_PlaceholderView):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("🎮  Cockpit", parent)
@@ -133,13 +129,12 @@ class SettingsView(_PlaceholderView):
         super().__init__("⚙  Einstellungen", parent)
 
 
-_SECTION_VIEWS: dict[Section, type[_PlaceholderView]] = {
-    Section.DASHBOARD: DashboardView,
-    Section.COCKPIT:   CockpitView,
-    Section.RISK:      RiskView,
-    Section.JOURNAL:   JournalView,
-    Section.BACKTEST:  BacktestView,
-    Section.SETTINGS:  SettingsView,
+_PLACEHOLDER_VIEWS: dict[Section, type[_PlaceholderView]] = {
+    Section.COCKPIT:  CockpitView,
+    Section.RISK:     RiskView,
+    Section.JOURNAL:  JournalView,
+    Section.BACKTEST: BacktestView,
+    Section.SETTINGS: SettingsView,
 }
 
 
@@ -427,20 +422,24 @@ class MainWindow(QMainWindow):
 
     Parameters
     ----------
-    theme_manager : ThemeManager-Instanz. Standard: globale Instanz.
-                    Fuer Tests frische Instanz uebergeben.
+    theme_manager      : ThemeManager-Instanz. Standard: globale Instanz.
+                         Fuer Tests frische Instanz uebergeben.
+    dashboard_backend  : Backend fuer den Dashboard-View (Optional).
+                         Wenn None, zeigt Dashboard Platzhalterwerte.
     """
 
     def __init__(
         self,
         theme_manager: Optional[ThemeManager] = None,
+        dashboard_backend: Optional[DashboardBackend] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("QuantzAI")
         self.setMinimumSize(1366, 768)
 
-        self._theme = theme_manager if theme_manager is not None else get_theme_manager()
+        self._theme              = theme_manager if theme_manager is not None else get_theme_manager()
+        self._dashboard_backend  = dashboard_backend
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -468,10 +467,18 @@ class MainWindow(QMainWindow):
         # Content-Bereich
         self._content = QStackedWidget()
         self._views: dict[Section, QWidget] = {}
-        for section, ViewClass in _SECTION_VIEWS.items():
+
+        # Dashboard: echter View mit optionalem Backend
+        self._dashboard_view = DashboardView(backend=self._dashboard_backend)
+        self._views[Section.DASHBOARD] = self._dashboard_view
+        self._content.addWidget(self._dashboard_view)
+
+        # Restliche Sektionen: Placeholder-Views
+        for section, ViewClass in _PLACEHOLDER_VIEWS.items():
             view = ViewClass()
             self._views[section] = view
             self._content.addWidget(view)
+
         root.addWidget(self._content, stretch=1)
 
         # Status-Bar (permanent am unteren Rand)
@@ -501,6 +508,10 @@ class MainWindow(QMainWindow):
 
     def current_view(self) -> QWidget:
         return self._content.currentWidget()
+
+    @property
+    def dashboard_view(self) -> DashboardView:
+        return self._dashboard_view
 
     def navigate_to(self, section: Section) -> None:
         """Navigiert programmatisch zu einer Sektion."""

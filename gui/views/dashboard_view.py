@@ -1,0 +1,844 @@
+"""
+gui/views/dashboard_view.py
+Dashboard-View – alle wichtigen Kennzahlen auf einen Blick.
+
+HCI-Prinzipien:
+  - Minimale Gedaechtnislast: kein Suchen, alles sichtbar ohne Klicken
+  - Sichtbarkeit des Systemstatus: Echtzeit-Polling, Ampelstatus immer praesentiert
+  - Kein Datenpunkt ohne Kontext: jede Zahl hat eine erklaerende Bezeichnung
+
+Architektur (Trennung UI / Logik):
+  - DashboardSnapshot: reines Daten-Objekt (keine Qt-Abhaengigkeit)
+  - compute_risk_status(): pure Funktion, testbar ohne Qt
+  - DashboardBackend: Protocol – jedes Objekt das fetch_snapshot() hat
+  - DashboardView: nur Darstellung, keine Geschaeftslogik
+
+Anbindung ans Backend:
+  backend.fetch_snapshot() -> DashboardSnapshot
+  Polling ueber QTimer (konfigurierbares Intervall, Standard 5 s).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum, auto
+from typing import Optional, Protocol, runtime_checkable
+
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QScrollArea,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Daten-Typen (pure Python – kein Qt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RiskStatus(Enum):
+    GREEN  = "grün"
+    YELLOW = "gelb"
+    RED    = "rot"
+
+
+@dataclass
+class SignalInfo:
+    """Signal eines Symbol mit Konfidenz."""
+    symbol:     str
+    signal:     str    # 'long' | 'short' | 'flat'
+    confidence: float  # 0.0–1.0
+
+
+@dataclass
+class PositionInfo:
+    """Eine offene Position."""
+    ticket:      int | str
+    symbol:      str
+    direction:   str
+    lot_size:    float
+    open_price:  float
+    current_pnl: float | None = None
+
+
+@dataclass
+class DashboardSnapshot:
+    """Vollstaendiger Snapshot aller Dashboard-Daten zu einem Zeitpunkt."""
+
+    # Konto
+    balance:           float | None = None
+    day_start_balance: float | None = None
+    all_time_high:     float | None = None
+    currency:          str = "€"
+
+    # Drawdown / Tagesverlust
+    drawdown_pct:           float = 0.0
+    drawdown_limit_pct:     float = 15.0
+    daily_loss_pct:         float = 0.0
+    daily_loss_limit_pct:   float = 5.0
+    post_loss_days_remaining: int = 0
+
+    # Risiko-Ampel (vorberechnet vom Backend)
+    risk_status:  RiskStatus  = RiskStatus.GREEN
+    risk_reasons: list[str]   = field(default_factory=list)
+
+    # Offene Positionen
+    positions: list[PositionInfo] = field(default_factory=list)
+
+    # Tages-Statistiken (aus TradeJournal)
+    today_trades:   int         = 0
+    today_pnl:      float | None = None
+    today_win_rate: float | None = None
+
+    # Signale (aus SignalModel)
+    signals: list[SignalInfo] = field(default_factory=list)
+
+    # Zeitstempel der letzten Aktualisierung
+    updated_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
+@runtime_checkable
+class DashboardBackend(Protocol):
+    """Protokoll fuer Backend-Objekte die Dashboard-Daten liefern."""
+    def fetch_snapshot(self) -> DashboardSnapshot: ...
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Pure Logik (testbar ohne Qt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RISK_WARNING_RATIO = 0.8  # Warnfarbe ab 80 % des Limits
+
+
+def compute_risk_status(
+    trading_allowed: bool,
+    daily_limit_hit: bool,
+    max_drawdown_hit: bool,
+    post_loss_days: int = 0,
+    drawdown_pct: float = 0.0,
+    drawdown_limit_pct: float = 15.0,
+    anomaly_detected: bool = False,
+    warning_ratio: float = _RISK_WARNING_RATIO,
+) -> tuple[RiskStatus, list[str]]:
+    """
+    Berechnet Risiko-Ampelstatus aus mehreren Quellen (RiskGuard, AnomalyDetector).
+
+    Reihenfolge: erste treffende Bedingung bestimmt den Status.
+      RED    : max_drawdown_hit | daily_limit_hit | anomaly_detected | not trading_allowed
+      YELLOW : post_loss_days > 0 | drawdown >= warning_ratio * limit
+      GREEN  : alles in Ordnung
+    """
+    reasons: list[str] = []
+
+    if max_drawdown_hit:
+        reasons.append("Maximaler Drawdown erreicht – Handel gesperrt")
+        return RiskStatus.RED, reasons
+
+    if daily_limit_hit:
+        reasons.append("Tägliches Verlustlimit erreicht – Handel gesperrt")
+        return RiskStatus.RED, reasons
+
+    if anomaly_detected:
+        reasons.append("Bot-Anomalie erkannt – Handel gesperrt")
+        return RiskStatus.RED, reasons
+
+    if not trading_allowed:
+        reasons.append("Handel gesperrt")
+        return RiskStatus.RED, reasons
+
+    # YELLOW-Bedingungen
+    if post_loss_days > 0:
+        reasons.append(
+            f"Post-Loss-Phase: {post_loss_days} Tag(e) reduzierte Positionsgröße"
+        )
+
+    if drawdown_limit_pct > 0:
+        if drawdown_pct / drawdown_limit_pct >= warning_ratio:
+            reasons.append(
+                f"Drawdown {drawdown_pct:.1f}% nähert sich Limit {drawdown_limit_pct:.1f}%"
+            )
+
+    if reasons:
+        return RiskStatus.YELLOW, reasons
+
+    return RiskStatus.GREEN, ["Handel erlaubt"]
+
+
+def _fmt_balance(amount: float | None, currency: str = "€") -> str:
+    if amount is None:
+        return "--"
+    return f"{currency}{amount:,.2f}"
+
+
+def _fmt_delta(amount: float | None, currency: str = "€") -> str:
+    if amount is None:
+        return "--"
+    sign = "+" if amount > 0 else ""
+    return f"{sign}{currency}{amount:,.2f}"
+
+
+def _fmt_pct(value: float | None, decimals: int = 1) -> str:
+    if value is None:
+        return "--"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.{decimals}f}%"
+
+
+def _profit_color(value: float | None) -> str:
+    if value is None:
+        return ""
+    return "#22c55e" if value >= 0 else "#ef4444"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Interne Widget-Helfer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _card(parent: QWidget | None = None) -> QFrame:
+    """Erstellt eine einheitliche Karte (Panel mit Rahmen)."""
+    f = QFrame(parent)
+    f.setObjectName("dashboard_card")
+    f.setFrameShape(QFrame.Shape.StyledPanel)
+    return f
+
+
+def _title_label(text: str, parent: QWidget | None = None) -> QLabel:
+    lbl = QLabel(text, parent)
+    lbl.setObjectName("card_title")
+    lbl.setProperty("secondary", "true")
+    return lbl
+
+
+def _hline() -> QFrame:
+    f = QFrame()
+    f.setFrameShape(QFrame.Shape.HLine)
+    f.setObjectName("dashboard_hline")
+    return f
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Kontostand-Karte
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _AccountCard(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(4)
+
+        lay.addWidget(_title_label("Kontostand"))
+
+        self._balance_lbl = QLabel("--")
+        self._balance_lbl.setObjectName("account_balance")
+        f = self._balance_lbl.font()
+        f.setPointSize(20)
+        f.setBold(True)
+        self._balance_lbl.setFont(f)
+        lay.addWidget(self._balance_lbl)
+
+        self._day_lbl = QLabel("Heute: --")
+        self._day_lbl.setObjectName("account_day_change")
+        self._day_lbl.setToolTip(
+            "Tagesveränderung: absoluter Betrag und Prozent gegenüber Tagesstart"
+        )
+        lay.addWidget(self._day_lbl)
+
+        self._ath_lbl = QLabel("Allzeithoch: --")
+        self._ath_lbl.setObjectName("account_ath")
+        self._ath_lbl.setProperty("secondary", "true")
+        self._ath_lbl.setToolTip("Höchster je erreichter Kontostand (All-Time-High)")
+        lay.addWidget(self._ath_lbl)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        self._balance_lbl.setText(_fmt_balance(snap.balance, snap.currency))
+
+        if snap.balance is not None and snap.day_start_balance is not None:
+            delta = snap.balance - snap.day_start_balance
+            pct   = (delta / snap.day_start_balance * 100
+                     if snap.day_start_balance else 0.0)
+            self._day_lbl.setText(
+                f"Heute: {_fmt_delta(delta, snap.currency)} ({_fmt_pct(pct)})"
+            )
+            self._day_lbl.setStyleSheet(f"color: {_profit_color(delta)};")
+        else:
+            self._day_lbl.setText("Heute: --")
+            self._day_lbl.setStyleSheet("")
+
+        self._ath_lbl.setText(
+            f"Allzeithoch: {_fmt_balance(snap.all_time_high, snap.currency)}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Drawdown-Gauge
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DD_WARN_RATIO  = _RISK_WARNING_RATIO   # 80 %
+_QSS_DD_NORMAL  = "QProgressBar::chunk { background-color: #6366f1; }"
+_QSS_DD_WARNING = "QProgressBar::chunk { background-color: #f59e0b; }"
+_QSS_DD_DANGER  = "QProgressBar::chunk { background-color: #ef4444; }"
+
+
+class _DrawdownGauge(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(6)
+
+        lay.addWidget(_title_label("Drawdown"))
+
+        self._pct_lbl = QLabel("0.0% / 15.0% Limit")
+        self._pct_lbl.setObjectName("drawdown_label")
+        self._pct_lbl.setToolTip(
+            "Aktueller Drawdown vom Allzeithoch in Prozent, bezogen auf das konfigurierte Limit"
+        )
+        lay.addWidget(self._pct_lbl)
+
+        self._bar = QProgressBar()
+        self._bar.setObjectName("drawdown_bar")
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(12)
+        self._bar.setStyleSheet(_QSS_DD_NORMAL)
+        lay.addWidget(self._bar)
+
+        self._daily_lbl = QLabel("Tagesverlust: --")
+        self._daily_lbl.setProperty("secondary", "true")
+        self._daily_lbl.setToolTip("Heutiger Verlust in % des Tagesstart-Kontostands")
+        lay.addWidget(self._daily_lbl)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        self._pct_lbl.setText(
+            f"{snap.drawdown_pct:.1f}% / {snap.drawdown_limit_pct:.1f}% Limit"
+        )
+
+        if snap.drawdown_limit_pct > 0:
+            ratio   = snap.drawdown_pct / snap.drawdown_limit_pct
+            bar_val = min(100, int(ratio * 100))
+        else:
+            ratio   = 0.0
+            bar_val = 0
+
+        self._bar.setValue(bar_val)
+
+        if ratio >= 1.0:
+            self._bar.setStyleSheet(_QSS_DD_DANGER)
+        elif ratio >= _DD_WARN_RATIO:
+            self._bar.setStyleSheet(_QSS_DD_WARNING)
+        else:
+            self._bar.setStyleSheet(_QSS_DD_NORMAL)
+
+        self._daily_lbl.setText(
+            f"Tagesverlust: {snap.daily_loss_pct:.1f}% / {snap.daily_loss_limit_pct:.1f}% Limit"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Risiko-Ampel
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STATUS_COLOR = {
+    RiskStatus.GREEN:  "#22c55e",
+    RiskStatus.YELLOW: "#f59e0b",
+    RiskStatus.RED:    "#ef4444",
+}
+
+_STATUS_LABEL = {
+    RiskStatus.GREEN:  "Handel erlaubt",
+    RiskStatus.YELLOW: "Warnung",
+    RiskStatus.RED:    "Handel gesperrt",
+}
+
+
+class _RiskTrafficLight(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(4)
+        lay.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        lay.addWidget(_title_label("Risiko-Ampel"))
+
+        self._dot_lbl = QLabel("●")
+        self._dot_lbl.setObjectName("risk_dot")
+        self._dot_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        df = self._dot_lbl.font()
+        df.setPointSize(28)
+        self._dot_lbl.setFont(df)
+        lay.addWidget(self._dot_lbl)
+
+        self._status_lbl = QLabel("--")
+        self._status_lbl.setObjectName("risk_status_label")
+        self._status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sf = self._status_lbl.font()
+        sf.setBold(True)
+        self._status_lbl.setFont(sf)
+        lay.addWidget(self._status_lbl)
+
+        self._reason_lbl = QLabel("")
+        self._reason_lbl.setObjectName("risk_reason")
+        self._reason_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._reason_lbl.setWordWrap(True)
+        self._reason_lbl.setProperty("secondary", "true")
+        lay.addWidget(self._reason_lbl)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        color  = _STATUS_COLOR[snap.risk_status]
+        label  = _STATUS_LABEL[snap.risk_status]
+        reason = "\n".join(snap.risk_reasons) if snap.risk_reasons else ""
+
+        self._dot_lbl.setStyleSheet(f"color: {color};")
+        self._status_lbl.setText(label)
+        self._status_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self._reason_lbl.setText(reason)
+
+    @property
+    def status_label(self) -> QLabel:
+        return self._status_lbl
+
+    @property
+    def dot_label(self) -> QLabel:
+        return self._dot_lbl
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Offene Positionen
+# ─────────────────────────────────────────────────────────────────────────────
+
+_POS_HEADERS = ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L"]
+
+
+class _PositionsTable(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(6)
+
+        lay.addWidget(_title_label("Offene Positionen"))
+
+        self._table = QTableWidget(0, len(_POS_HEADERS))
+        self._table.setObjectName("positions_table")
+        self._table.setHorizontalHeaderLabels(_POS_HEADERS)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setMinimumHeight(100)
+        lay.addWidget(self._table)
+
+        for hdr, tooltip in zip(_POS_HEADERS, [
+            "Handelssymbol",
+            "Handelsrichtung (long = Kauf, short = Verkauf)",
+            "Lot-Größe der Position",
+            "Eröffnungspreis der Position",
+            "Aktueller unrealisierter Gewinn/Verlust",
+        ]):
+            pass  # Tooltips werden per Header gesetzt
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        positions = snap.positions
+        self._table.setRowCount(len(positions))
+
+        for row, pos in enumerate(positions):
+            pnl_text = _fmt_delta(pos.current_pnl, snap.currency)
+
+            cells = [
+                pos.symbol,
+                pos.direction.upper(),
+                f"{pos.lot_size:.2f}",
+                f"{pos.open_price:.5f}",
+                pnl_text,
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 4 and pos.current_pnl is not None:
+                    color = _profit_color(pos.current_pnl)
+                    item.setForeground(
+                        __import__("PySide6.QtGui", fromlist=["QColor"]).QColor(color)
+                    )
+                self._table.setItem(row, col, item)
+
+        self._table.resizeColumnsToContents()
+
+    @property
+    def table(self) -> QTableWidget:
+        return self._table
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Tages-Statistiken
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _DailyStatsCard(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(6)
+
+        lay.addWidget(_title_label("Heutige Statistiken"))
+
+        row = QHBoxLayout()
+        row.setSpacing(24)
+
+        def _stat(label: str, obj_name: str, tooltip: str) -> QLabel:
+            col = QVBoxLayout()
+            lbl_title = QLabel(label)
+            lbl_title.setProperty("secondary", "true")
+            lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val = QLabel("--")
+            val.setObjectName(obj_name)
+            val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val.setToolTip(tooltip)
+            f = val.font()
+            f.setPointSize(14)
+            f.setBold(True)
+            val.setFont(f)
+            col.addWidget(lbl_title)
+            col.addWidget(val)
+            row.addLayout(col)
+            return val
+
+        self._trades_lbl   = _stat("Trades heute",  "stat_trades",   "Anzahl Trades heute")
+        self._pnl_lbl      = _stat("Tages-P&L",     "stat_day_pnl",  "Realisierter P&L heute")
+        self._winrate_lbl  = _stat("Win-Rate",       "stat_win_rate", "Anteil erfolgreicher Trades heute")
+
+        lay.addLayout(row)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        self._trades_lbl.setText(str(snap.today_trades))
+
+        pnl_text = _fmt_delta(snap.today_pnl, snap.currency)
+        self._pnl_lbl.setText(pnl_text)
+        self._pnl_lbl.setStyleSheet(f"color: {_profit_color(snap.today_pnl)};")
+
+        if snap.today_win_rate is not None:
+            self._winrate_lbl.setText(f"{snap.today_win_rate * 100:.1f}%")
+        else:
+            self._winrate_lbl.setText("--")
+
+    @property
+    def trades_label(self) -> QLabel:
+        return self._trades_lbl
+
+    @property
+    def pnl_label(self) -> QLabel:
+        return self._pnl_lbl
+
+    @property
+    def winrate_label(self) -> QLabel:
+        return self._winrate_lbl
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Signal-Panel
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SIGNAL_COLOR = {
+    "long":  "#22c55e",
+    "short": "#ef4444",
+    "flat":  "#6b7280",
+}
+
+
+class _SignalRow(QWidget):
+    """Eine Zeile fuer ein einzelnes Symbol-Signal."""
+
+    def __init__(self, info: SignalInfo, currency: str = "€",
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(8)
+
+        sym_lbl = QLabel(info.symbol)
+        sym_lbl.setObjectName("signal_symbol")
+        sym_lbl.setFixedWidth(80)
+        sym_lbl.setToolTip(f"Signal fuer {info.symbol}")
+
+        sig_lbl = QLabel(info.signal.upper())
+        sig_lbl.setObjectName("signal_direction")
+        color = _SIGNAL_COLOR.get(info.signal.lower(), "#6b7280")
+        sig_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
+        sig_lbl.setFixedWidth(60)
+
+        conf_bar = QProgressBar()
+        conf_bar.setObjectName("signal_confidence_bar")
+        conf_bar.setRange(0, 100)
+        conf_bar.setValue(int(info.confidence * 100))
+        conf_bar.setTextVisible(False)
+        conf_bar.setFixedHeight(10)
+        conf_bar.setFixedWidth(100)
+        conf_bar.setToolTip(f"Modell-Konfidenz: {info.confidence * 100:.0f}%")
+
+        conf_lbl = QLabel(f"{info.confidence * 100:.0f}%")
+        conf_lbl.setObjectName("signal_confidence_label")
+        conf_lbl.setFixedWidth(36)
+        conf_lbl.setToolTip("Konfidenz des Signal-Modells (0–100%)")
+
+        lay.addWidget(sym_lbl)
+        lay.addWidget(sig_lbl)
+        lay.addWidget(conf_bar)
+        lay.addWidget(conf_lbl)
+        lay.addStretch()
+
+        # Store for tests
+        self._sym_lbl  = sym_lbl
+        self._sig_lbl  = sig_lbl
+        self._conf_bar = conf_bar
+        self._conf_lbl = conf_lbl
+
+    @property
+    def signal_label(self) -> QLabel:
+        return self._sig_lbl
+
+    @property
+    def confidence_label(self) -> QLabel:
+        return self._conf_lbl
+
+
+class _SignalPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(16, 12, 16, 14)
+        self._outer.setSpacing(4)
+
+        self._outer.addWidget(_title_label("Aktuelle Signale"))
+
+        self._empty_lbl = QLabel("Keine Signale verfügbar")
+        self._empty_lbl.setProperty("secondary", "true")
+        self._outer.addWidget(self._empty_lbl)
+
+        self._rows_container = QWidget()
+        self._rows_layout    = QVBoxLayout(self._rows_container)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(2)
+        self._outer.addWidget(self._rows_container)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        # Alte Zeilen loeschen
+        while self._rows_layout.count():
+            item = self._rows_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not snap.signals:
+            self._empty_lbl.setVisible(True)
+            self._rows_container.setVisible(False)
+            return
+
+        self._empty_lbl.setVisible(False)
+        self._rows_container.setVisible(True)
+        for info in snap.signals:
+            row = _SignalRow(info, snap.currency)
+            self._rows_layout.addWidget(row)
+
+    @property
+    def empty_label(self) -> QLabel:
+        return self._empty_lbl
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Hauptview
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DashboardView(QScrollArea):
+    """
+    Dashboard-Hauptansicht.
+
+    Zeigt auf einen Blick:
+      - Kontostand mit Tagesveraenderung
+      - Drawdown-Gauge mit konfigurierbarer Warnschwelle
+      - Risiko-Ampel (gruen/gelb/rot)
+      - Offene Positionen mit Live-P&L
+      - Heutige Statistiken aus TradeJournal
+      - Aktuelle Signale aus SignalModel
+
+    Parameters
+    ----------
+    backend     : Objekt mit fetch_snapshot() -> DashboardSnapshot.
+                  None = keine automatische Aktualisierung.
+    interval_ms : Polling-Intervall in Millisekunden (Standard: 5 000).
+    parent      : Eltern-Widget.
+    """
+
+    # Signal wenn Daten abgerufen wurden (fuer Tests und UI-Updates)
+    data_refreshed = Signal(DashboardSnapshot)
+
+    def __init__(
+        self,
+        backend: Optional[DashboardBackend] = None,
+        interval_ms: int = 5_000,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_view")
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self._backend     = backend
+        self._interval_ms = interval_ms
+        self._last_snap   = DashboardSnapshot()  # Initialzustand
+
+        self._build()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_timer)
+
+        # Initialen Zustand anzeigen
+        self._apply_snapshot(self._last_snap)
+
+    def _build(self) -> None:
+        container = QWidget()
+        container.setObjectName("dashboard_container")
+        self.setWidget(container)
+
+        root = QVBoxLayout(container)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        # ── Obere Reihe: Account | Drawdown | Risiko-Ampel ───────────────────
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+
+        self._account   = _AccountCard()
+        self._drawdown  = _DrawdownGauge()
+        self._risk_light = _RiskTrafficLight()
+
+        for w in (self._account, self._drawdown, self._risk_light):
+            w.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            top_row.addWidget(w)
+
+        root.addLayout(top_row)
+
+        # ── Tages-Statistiken ─────────────────────────────────────────────────
+        self._daily_stats = _DailyStatsCard()
+        root.addWidget(self._daily_stats)
+
+        # ── Offene Positionen ────────────────────────────────────────────────
+        self._positions = _PositionsTable()
+        root.addWidget(self._positions)
+
+        # ── Signal-Panel ─────────────────────────────────────────────────────
+        self._signals = _SignalPanel()
+        root.addWidget(self._signals)
+
+        root.addStretch()
+
+        # Zeitstempel-Label
+        self._updated_lbl = QLabel("Letzte Aktualisierung: --")
+        self._updated_lbl.setObjectName("dashboard_updated_at")
+        self._updated_lbl.setProperty("secondary", "true")
+        self._updated_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        root.addWidget(self._updated_lbl)
+
+    def _apply_snapshot(self, snap: DashboardSnapshot) -> None:
+        """Aktualisiert alle Widgets mit neuen Daten."""
+        self._last_snap = snap
+        self._account.refresh(snap)
+        self._drawdown.refresh(snap)
+        self._risk_light.refresh(snap)
+        self._daily_stats.refresh(snap)
+        self._positions.refresh(snap)
+        self._signals.refresh(snap)
+        self._updated_lbl.setText(f"Letzte Aktualisierung: {snap.updated_at[:19].replace('T', ' ')} UTC")
+
+    @Slot()
+    def _on_timer(self) -> None:
+        if self._backend is None:
+            return
+        try:
+            snap = self._backend.fetch_snapshot()
+        except Exception:  # noqa: BLE001
+            return
+        self._apply_snapshot(snap)
+        self.data_refreshed.emit(snap)
+
+    # ── Oeffentliche API ──────────────────────────────────────────────────────
+
+    def update_display(self, snapshot: DashboardSnapshot) -> None:
+        """Manuell einen Snapshot einspielen (z.B. aus Tests oder Push-Updates)."""
+        self._apply_snapshot(snapshot)
+
+    def set_backend(self, backend: DashboardBackend) -> None:
+        """Setzt oder ersetzt das Backend. Startet Polling nicht automatisch."""
+        self._backend = backend
+
+    def start_polling(self) -> None:
+        """Startet automatisches Polling (backend muss gesetzt sein)."""
+        if self._backend is not None and not self._timer.isActive():
+            self._timer.start(self._interval_ms)
+
+    def stop_polling(self) -> None:
+        """Stoppt automatisches Polling."""
+        self._timer.stop()
+
+    @property
+    def is_polling(self) -> bool:
+        return self._timer.isActive()
+
+    @property
+    def account_card(self) -> _AccountCard:
+        return self._account
+
+    @property
+    def drawdown_gauge(self) -> _DrawdownGauge:
+        return self._drawdown
+
+    @property
+    def risk_light(self) -> _RiskTrafficLight:
+        return self._risk_light
+
+    @property
+    def daily_stats(self) -> _DailyStatsCard:
+        return self._daily_stats
+
+    @property
+    def positions_table(self) -> _PositionsTable:
+        return self._positions
+
+    @property
+    def signal_panel(self) -> _SignalPanel:
+        return self._signals
+
+    @property
+    def last_snapshot(self) -> DashboardSnapshot:
+        return self._last_snap
