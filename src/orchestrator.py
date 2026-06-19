@@ -114,6 +114,7 @@ class TradingOrchestrator:
         self._balance_getter  = balance_getter
 
         self._stop_event = threading.Event()
+        self._paused     = False
 
     # ── Oeffentliche Schnittstelle ────────────────────────────────────────────
 
@@ -141,6 +142,13 @@ class TradingOrchestrator:
             "lot_size":        None,
             "step_stopped_at": None,
         }
+
+        # ── Pause-Check ───────────────────────────────────────────────────────
+        if self._paused:
+            result["reason"]          = "trading_paused"
+            result["step_stopped_at"] = "pause"
+            logger.info("Zyklus | {sym} | Handelspause aktiv -> Abbruch", sym=symbol)
+            return result
 
         # ── Schritt 1: DataPipeline ───────────────────────────────────────────
         now   = datetime.now(timezone.utc)
@@ -310,6 +318,25 @@ class TradingOrchestrator:
         """
         self._stop_event.set()
         logger.info("TradingOrchestrator: Stop-Signal gesetzt.")
+
+    def pause(self, reason: str = "") -> None:
+        """
+        Aktiviert Handelspause. run_cycle() gibt sofort 'trading_paused' zurueck.
+        Wird z.B. von PsychologyTracker bei erkanntem Tilt-Verhalten aufgerufen.
+        """
+        self._paused = True
+        suffix = f" Grund: {reason}" if reason else ""
+        logger.warning("TradingOrchestrator: Handelspause aktiviert.{s}", s=suffix)
+
+    def resume(self) -> None:
+        """Hebt die Handelspause auf und ermoeglicht wieder Zyklen."""
+        self._paused = False
+        logger.info("TradingOrchestrator: Handelspause beendet.")
+
+    @property
+    def is_paused(self) -> bool:
+        """True wenn die Handelspause aktiv ist."""
+        return self._paused
 
     # ── Hilfsmethoden ─────────────────────────────────────────────────────────
 
