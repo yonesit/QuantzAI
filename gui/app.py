@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from gui.design.theme import ThemeManager, ThemeMode, get_theme_manager
 from gui.views.cockpit_view import CockpitBackend, CockpitView
 from gui.views.dashboard_view import DashboardBackend, DashboardView
+from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 
 
@@ -116,7 +117,7 @@ class _RiskPlaceholderView(_PlaceholderView):
         super().__init__("🛡  Risiko", parent)
 
 
-class JournalView(_PlaceholderView):
+class _JournalPlaceholderView(_PlaceholderView):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("📓  Journal", parent)
 
@@ -132,7 +133,6 @@ class SettingsView(_PlaceholderView):
 
 
 _PLACEHOLDER_VIEWS: dict[Section, type[_PlaceholderView]] = {
-    Section.JOURNAL:  JournalView,
     Section.BACKTEST: BacktestView,
     Section.SETTINGS: SettingsView,
 }
@@ -434,6 +434,7 @@ class MainWindow(QMainWindow):
         dashboard_backend:    Optional[DashboardBackend]    = None,
         cockpit_backend:      Optional[CockpitBackend]      = None,
         risk_center_backend:  Optional[RiskCenterBackend]   = None,
+        journal_backend:      Optional[JournalBackend]      = None,
         parent:               Optional[QWidget]             = None,
     ) -> None:
         super().__init__(parent)
@@ -444,6 +445,7 @@ class MainWindow(QMainWindow):
         self._dashboard_backend   = dashboard_backend
         self._cockpit_backend     = cockpit_backend
         self._risk_center_backend = risk_center_backend
+        self._journal_backend     = journal_backend
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -486,6 +488,11 @@ class MainWindow(QMainWindow):
         self._risk_center_view = RiskCenterView(backend=self._risk_center_backend)
         self._views[Section.RISK] = self._risk_center_view
         self._content.addWidget(self._risk_center_view)
+
+        # Journal: echter View mit optionalem Backend
+        self._journal_view = JournalView(backend=self._journal_backend)
+        self._views[Section.JOURNAL] = self._journal_view
+        self._content.addWidget(self._journal_view)
 
         # Restliche Sektionen: Placeholder-Views
         for section, ViewClass in _PLACEHOLDER_VIEWS.items():
@@ -534,6 +541,10 @@ class MainWindow(QMainWindow):
     @property
     def risk_center_view(self) -> RiskCenterView:
         return self._risk_center_view
+
+    @property
+    def journal_view(self) -> JournalView:
+        return self._journal_view
 
     def navigate_to(self, section: Section) -> None:
         """Navigiert programmatisch zu einer Sektion."""
