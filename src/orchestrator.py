@@ -30,11 +30,21 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from loguru import logger
 
+from src.modes import ConfirmationCallback, TradingMode, is_autonomous_allowed
+
 # Timeframe -> Minuten pro Kerze
 _TIMEFRAME_MINUTES: dict[str, int] = {
     "M1": 1, "M5": 5, "M15": 15, "M30": 30,
     "H1": 60, "H4": 240, "D1": 1440, "W1": 10080,
 }
+
+
+def _validate_mode_transition(mode: TradingMode) -> None:
+    """Wirft EnvironmentError wenn AUTONOMOUS ohne CONFIRM_AUTONOMOUS=yes gesetzt wird."""
+    if mode == TradingMode.AUTONOMOUS and not is_autonomous_allowed():
+        raise EnvironmentError(
+            "AUTONOMOUS-Modus erfordert Umgebungsvariable CONFIRM_AUTONOMOUS=yes."
+        )
 
 
 class TradingOrchestrator:
@@ -89,6 +99,8 @@ class TradingOrchestrator:
         tp_atr_multiplier: float = 2.0,
         atr_col: str = "atr",
         close_col: str = "close",
+        mode: TradingMode = TradingMode.SUGGEST_ONLY,
+        confirmation_callback: Optional[ConfirmationCallback] = None,
     ) -> None:
         self._pipeline        = data_pipeline
         self._risk_guard      = risk_guard
@@ -110,11 +122,20 @@ class TradingOrchestrator:
         self._atr_col         = atr_col
         self._close_col       = close_col
 
-        self._features_loader = features_loader or self._default_features_loader
-        self._balance_getter  = balance_getter
+        self._features_loader        = features_loader or self._default_features_loader
+        self._balance_getter         = balance_getter
+        self._confirmation_callback  = confirmation_callback
 
         self._stop_event = threading.Event()
         self._paused     = False
+
+        # Mode validation and initialisation
+        _validate_mode_transition(mode)
+        self._mode = mode
+        logger.info(
+            "TradingOrchestrator: initialisiert | Modus={m}",
+            m=self._mode.value,
+        )
 
     # ── Oeffentliche Schnittstelle ────────────────────────────────────────────
 
@@ -230,8 +251,7 @@ class TradingOrchestrator:
         multiplier = self._risk_guard.get_position_size_multiplier()
         lot_size   = max(round(size_result.lot_size * multiplier, 8), 0.01)
 
-        # ── Schritt 8: OrderExecutor ──────────────────────────────────────────
-        logger.info("Zyklus | {sym} | Schritt 8: OrderExecutor ({dir} {lot})", sym=symbol, dir=direction, lot=lot_size)
+        # ── SL / TP berechnen (benoetigt fuer Modus-Checks und Order) ────────────
         sl_dist = size_result.stop_loss_distance
         tp_dist = atr * self._tp_multiplier
         if direction == "buy":
@@ -240,6 +260,79 @@ class TradingOrchestrator:
         else:
             sl_price = round(close_price + sl_dist, 5)
             tp_price = round(close_price - tp_dist, 5)
+
+        # ── Modus-Check ───────────────────────────────────────────────────────
+
+        # SUGGEST_ONLY: Signal anzeigen, niemals Order ausfuehren
+        if self._mode == TradingMode.SUGGEST_ONLY:
+            result["action"]          = "suggested"
+            result["lot_size"]        = lot_size
+            result["reason"]          = "suggest_only_mode"
+            result["step_stopped_at"] = "mode_suggest_only"
+            self._log_step("CYCLE_SUGGESTED", {
+                "symbol": symbol, "direction": direction, "lot_size": lot_size,
+                "sl": sl_price, "tp": tp_price,
+            })
+            logger.info(
+                "Zyklus | {sym} | SUGGEST_ONLY | {sig} {dir} {lot} Lots "
+                "SL={sl} TP={tp} (kein Trade)",
+                sym=symbol, sig=signal, dir=direction, lot=lot_size,
+                sl=sl_price, tp=tp_price,
+            )
+            return result
+
+        # CONFIRM_REQUIRED: ConfirmationCallback befragen
+        if self._mode == TradingMode.CONFIRM_REQUIRED:
+            confirmed = False
+            if self._confirmation_callback is not None:
+                try:
+                    confirmed = self._confirmation_callback.confirm_order(
+                        symbol, direction, lot_size, sl_price, tp_price
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "ConfirmationCallback Fehler: {exc} -> kein Trade", exc=exc
+                    )
+            else:
+                logger.warning(
+                    "Zyklus | {sym} | CONFIRM_REQUIRED ohne ConfirmationCallback -> kein Trade",
+                    sym=symbol,
+                )
+
+            if not confirmed:
+                result["action"]          = "skipped"
+                result["lot_size"]        = lot_size
+                result["reason"]          = "order_not_confirmed"
+                result["step_stopped_at"] = "confirmation"
+                self._log_step("CYCLE_NOT_CONFIRMED", {
+                    "symbol": symbol, "direction": direction,
+                })
+                logger.info(
+                    "Zyklus | {sym} | CONFIRM_REQUIRED | Bestaetigung verweigert -> kein Trade",
+                    sym=symbol,
+                )
+                return result
+
+            logger.info(
+                "Zyklus | {sym} | CONFIRM_REQUIRED | Bestaetigung erhalten -> Order",
+                sym=symbol,
+            )
+
+        # AUTONOMOUS: Umgebungsvariable als Schutzschranke pruefen
+        if self._mode == TradingMode.AUTONOMOUS and not is_autonomous_allowed():
+            result["action"]          = "skipped"
+            result["lot_size"]        = lot_size
+            result["reason"]          = "autonomous_not_confirmed_env"
+            result["step_stopped_at"] = "mode_autonomous_env_check"
+            self._log_step("CYCLE_AUTONOMOUS_ENV_MISSING", {"symbol": symbol})
+            logger.error(
+                "Zyklus | {sym} | AUTONOMOUS ohne CONFIRM_AUTONOMOUS=yes -> kein Trade",
+                sym=symbol,
+            )
+            return result
+
+        # ── Schritt 8: OrderExecutor ──────────────────────────────────────────
+        logger.info("Zyklus | {sym} | Schritt 8: OrderExecutor ({dir} {lot})", sym=symbol, dir=direction, lot=lot_size)
 
         order = self._executor.open_position(symbol, direction, lot_size, sl_price, tp_price)
 
@@ -337,6 +430,67 @@ class TradingOrchestrator:
     def is_paused(self) -> bool:
         """True wenn die Handelspause aktiv ist."""
         return self._paused
+
+    @property
+    def mode(self) -> TradingMode:
+        """Aktueller Betriebsmodus des Orchestrators."""
+        return self._mode
+
+    def set_mode(self, new_mode: TradingMode) -> None:
+        """
+        Wechselt den Betriebsmodus.
+
+        Fuer den Wechsel nach AUTONOMOUS muss CONFIRM_AUTONOMOUS=yes gesetzt sein.
+
+        Raises
+        ------
+        EnvironmentError
+            Wenn AUTONOMOUS ohne korrekte Umgebungsvariable angefordert wird.
+        """
+        _validate_mode_transition(new_mode)
+        old_mode   = self._mode
+        self._mode = new_mode
+        self._log_step("MODE_CHANGED", {
+            "old_mode": old_mode.value,
+            "new_mode": new_mode.value,
+        })
+        logger.info(
+            "TradingOrchestrator: Modus gewechselt | {old} -> {new}",
+            old=old_mode.value, new=new_mode.value,
+        )
+
+    def emergency_stop(self) -> None:
+        """
+        Notfall-Stop: Handelspause aktivieren + alle offenen Positionen schliessen.
+
+        Ruft pause() auf und anschliessend – falls verfuegbar –
+        EmergencyHandler.handle_drawdown_limit() um alle Positionen zu schliessen.
+        """
+        self.pause(reason="emergency_stop")
+        self._log_step("EMERGENCY_STOP", {})
+        logger.warning("TradingOrchestrator: NOTFALL-STOP ausgefuehrt.")
+
+        if self._emergency is not None:
+            try:
+                self._emergency.handle_drawdown_limit()
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "EmergencyHandler.handle_drawdown_limit() Fehler: {exc}", exc=exc
+                )
+        elif self._executor is not None:
+            try:
+                positions = self._executor.get_open_positions()
+                for pos in positions:
+                    ticket = pos.get("ticket")
+                    if ticket is not None:
+                        self._executor.close_position(ticket)
+                        logger.info(
+                            "NOTFALL-STOP: Position geschlossen | ticket={t}", t=ticket
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "NOTFALL-STOP: Fehler beim Schliessen der Positionen: {exc}", exc=exc
+                )
 
     # ── Hilfsmethoden ─────────────────────────────────────────────────────────
 

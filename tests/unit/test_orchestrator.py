@@ -12,6 +12,7 @@ Abgedeckt:
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from unittest.mock import MagicMock, call, patch
@@ -19,7 +20,8 @@ from unittest.mock import MagicMock, call, patch
 import pandas as pd
 import pytest
 
-from src.orchestrator import TradingOrchestrator
+from src.modes import TradingMode
+from src.orchestrator import TradingOrchestrator, _validate_mode_transition
 from src.risk.position_sizer import PositionSizeResult
 
 
@@ -55,6 +57,7 @@ def _make_orch(
     audit_log=True,
     emergency=True,
     balance=10_000.0,
+    mode: TradingMode = TradingMode.AUTONOMOUS,
 ) -> tuple[TradingOrchestrator, dict]:
     """Baut einen Orchestrator mit ausschliesslich Mocks."""
     pipeline    = MagicMock()
@@ -84,6 +87,10 @@ def _make_orch(
 
     feat_df = features if features is not None else _make_features()
 
+    # AUTONOMOUS erfordert Umgebungsvariable; für Tests ohne monkeypatch setzen wir sie direkt.
+    if mode == TradingMode.AUTONOMOUS:
+        os.environ.setdefault("CONFIRM_AUTONOMOUS", "yes")
+
     orch = TradingOrchestrator(
         data_pipeline=pipeline,
         risk_guard=risk_guard,
@@ -97,6 +104,7 @@ def _make_orch(
         emergency_handler=emerg,
         features_loader=lambda sym: feat_df,
         balance_getter=lambda: balance,
+        mode=mode,
     )
 
     mocks = {
@@ -576,3 +584,345 @@ class TestOptionalComponents:
         orch.run_cycle("EURUSD")
         call_args = mocks["corr_guard"].can_open_position.call_args
         assert call_args[0][2] == pos
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Pause / Resume
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPauseResume:
+
+    def test_pause_sets_paused(self):
+        orch, _ = _make_orch()
+        orch.pause()
+        assert orch.is_paused is True
+
+    def test_resume_clears_paused(self):
+        orch, _ = _make_orch()
+        orch.pause()
+        orch.resume()
+        assert orch.is_paused is False
+
+    def test_paused_cycle_returns_trading_paused(self):
+        orch, _ = _make_orch()
+        orch.pause()
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "trading_paused"
+        assert result["step_stopped_at"] == "pause"
+
+    def test_paused_cycle_no_order(self):
+        orch, mocks = _make_orch()
+        orch.pause()
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_resume_allows_cycle_again(self):
+        orch, _ = _make_orch()
+        orch.pause()
+        orch.resume()
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TradingModes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_orch_mode(
+    mode: TradingMode,
+    confirmation_callback=None,
+    signal: str = "long",
+    monkeypatch=None,
+) -> tuple[TradingOrchestrator, dict]:
+    """Wie _make_orch() aber mit Mode-Parameter."""
+    pipeline    = MagicMock()
+    risk_guard  = MagicMock()
+    pre_trade   = MagicMock()
+    sig_model   = MagicMock()
+    corr_guard  = MagicMock()
+    pos_sizer   = MagicMock()
+    executor    = MagicMock()
+    alog        = MagicMock()
+    emerg       = MagicMock()
+
+    pipeline.run_batch.return_value = {"status": "ok"}
+    risk_guard.is_trading_allowed.return_value = True
+    risk_guard.get_position_size_multiplier.return_value = 1.0
+    pre_trade.is_safe_to_trade.return_value = (True, "ok")
+    sig_model.get_signal.return_value = signal
+    corr_guard.can_open_position.return_value = True
+    executor.get_open_positions.return_value = []
+    pos_sizer.calculate_lot_size.return_value = _make_size_result()
+    executor.open_position.return_value = {
+        "ticket": 42, "symbol": "EURUSD", "direction": "buy",
+        "lot_size": 0.1, "status": "open",
+    }
+
+    if monkeypatch is not None and mode == TradingMode.AUTONOMOUS:
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")
+
+    orch = TradingOrchestrator(
+        data_pipeline=pipeline,
+        risk_guard=risk_guard,
+        pre_trade_check=pre_trade,
+        signal_model=sig_model,
+        correlation_guard=corr_guard,
+        position_sizer=pos_sizer,
+        order_executor=executor,
+        audit_log=alog,
+        emergency_handler=emerg,
+        features_loader=lambda sym: _make_features(),
+        balance_getter=lambda: 10_000.0,
+        mode=mode,
+        confirmation_callback=confirmation_callback,
+    )
+
+    mocks = {
+        "pipeline": pipeline, "risk_guard": risk_guard, "pre_trade": pre_trade,
+        "sig_model": sig_model, "corr_guard": corr_guard, "pos_sizer": pos_sizer,
+        "executor": executor, "audit_log": alog, "emergency": emerg,
+    }
+    return orch, mocks
+
+
+class TestTradingModes:
+
+    # ── SUGGEST_ONLY ──────────────────────────────────────────────────────────
+
+    def test_suggest_only_is_default_orchestrator_mode(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        assert orch.mode == TradingMode.SUGGEST_ONLY
+
+    def test_suggest_only_action_is_suggested(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "suggested"
+
+    def test_suggest_only_no_order_placed(self):
+        orch, mocks = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_suggest_only_reason(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "suggest_only_mode"
+
+    def test_suggest_only_step_stopped_at(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "mode_suggest_only"
+
+    def test_suggest_only_lot_size_computed(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        result = orch.run_cycle("EURUSD")
+        assert result["lot_size"] is not None and result["lot_size"] > 0
+
+    def test_suggest_only_signal_computed(self):
+        orch, mocks = _make_orch_mode(TradingMode.SUGGEST_ONLY, signal="long")
+        orch.run_cycle("EURUSD")
+        mocks["sig_model"].get_signal.assert_called_once()
+
+    # ── CONFIRM_REQUIRED ──────────────────────────────────────────────────────
+
+    def test_confirm_required_with_approval_opens_order(self):
+        class _CB:
+            def confirm_order(self, *a) -> bool:
+                return True
+
+        orch, mocks = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+        mocks["executor"].open_position.assert_called_once()
+
+    def test_confirm_required_with_rejection_skips_order(self):
+        class _CB:
+            def confirm_order(self, *a) -> bool:
+                return False
+
+        orch, mocks = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "skipped"
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_confirm_required_no_callback_skips_order(self):
+        orch, mocks = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=None)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "skipped"
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_confirm_required_rejection_reason(self):
+        class _CB:
+            def confirm_order(self, *a) -> bool:
+                return False
+
+        orch, _ = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "order_not_confirmed"
+
+    def test_confirm_required_rejection_step_stopped_at(self):
+        class _CB:
+            def confirm_order(self, *a) -> bool:
+                return False
+
+        orch, _ = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        result = orch.run_cycle("EURUSD")
+        assert result["step_stopped_at"] == "confirmation"
+
+    def test_confirm_required_callback_exception_skips_order(self):
+        class _CB:
+            def confirm_order(self, *a) -> bool:
+                raise RuntimeError("dialog closed")
+
+        orch, mocks = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "skipped"
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_confirm_required_callback_receives_correct_symbol(self):
+        received = {}
+
+        class _CB:
+            def confirm_order(self, symbol, direction, lot_size, sl, tp) -> bool:
+                received["symbol"] = symbol
+                return True
+
+        orch, _ = _make_orch_mode(TradingMode.CONFIRM_REQUIRED, confirmation_callback=_CB())
+        orch.run_cycle("GBPUSD")
+        assert received["symbol"] == "GBPUSD"
+
+    # ── AUTONOMOUS ────────────────────────────────────────────────────────────
+
+    def test_autonomous_with_env_opens_order(self, monkeypatch):
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")
+        orch, mocks = _make_orch_mode(TradingMode.AUTONOMOUS, monkeypatch=monkeypatch)
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "open_buy"
+        mocks["executor"].open_position.assert_called_once()
+
+    def test_autonomous_without_env_skips_order(self, monkeypatch):
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")  # needed for __init__
+        orch, mocks = _make_orch_mode(TradingMode.AUTONOMOUS, monkeypatch=monkeypatch)
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS")          # remove before run_cycle
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "skipped"
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_autonomous_without_env_skips_reason(self, monkeypatch):
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")
+        orch, _ = _make_orch_mode(TradingMode.AUTONOMOUS, monkeypatch=monkeypatch)
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS")
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "autonomous_not_confirmed_env"
+
+    def test_autonomous_init_without_env_raises(self, monkeypatch):
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS", raising=False)
+        with pytest.raises(EnvironmentError, match="CONFIRM_AUTONOMOUS"):
+            _make_orch_mode(TradingMode.AUTONOMOUS)
+
+    # ── mode property / set_mode ──────────────────────────────────────────────
+
+    def test_mode_property_returns_current_mode(self):
+        orch, _ = _make_orch_mode(TradingMode.SUGGEST_ONLY)
+        assert orch.mode == TradingMode.SUGGEST_ONLY
+
+    def test_set_mode_changes_mode(self):
+        orch, _ = _make_orch()
+        orch.set_mode(TradingMode.CONFIRM_REQUIRED)
+        assert orch.mode == TradingMode.CONFIRM_REQUIRED
+
+    def test_set_mode_to_autonomous_without_env_raises(self, monkeypatch):
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS", raising=False)
+        orch, _ = _make_orch(mode=TradingMode.SUGGEST_ONLY)
+        with pytest.raises(EnvironmentError, match="CONFIRM_AUTONOMOUS"):
+            orch.set_mode(TradingMode.AUTONOMOUS)
+
+    def test_set_mode_to_autonomous_with_env_succeeds(self, monkeypatch):
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")
+        orch, _ = _make_orch()
+        orch.set_mode(TradingMode.AUTONOMOUS)
+        assert orch.mode == TradingMode.AUTONOMOUS
+
+    def test_set_mode_logs_to_audit(self):
+        orch, mocks = _make_orch()
+        orch.set_mode(TradingMode.CONFIRM_REQUIRED)
+        mocks["audit_log"].log_error.assert_called()
+
+    def test_set_mode_suggest_to_confirm_then_back(self):
+        orch, _ = _make_orch()
+        orch.set_mode(TradingMode.CONFIRM_REQUIRED)
+        orch.set_mode(TradingMode.SUGGEST_ONLY)
+        assert orch.mode == TradingMode.SUGGEST_ONLY
+
+    # ── _validate_mode_transition ─────────────────────────────────────────────
+
+    def test_validate_suggest_always_ok(self, monkeypatch):
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS", raising=False)
+        _validate_mode_transition(TradingMode.SUGGEST_ONLY)  # kein Fehler
+
+    def test_validate_confirm_always_ok(self, monkeypatch):
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS", raising=False)
+        _validate_mode_transition(TradingMode.CONFIRM_REQUIRED)  # kein Fehler
+
+    def test_validate_autonomous_without_env_raises(self, monkeypatch):
+        monkeypatch.delenv("CONFIRM_AUTONOMOUS", raising=False)
+        with pytest.raises(EnvironmentError):
+            _validate_mode_transition(TradingMode.AUTONOMOUS)
+
+    def test_validate_autonomous_with_env_ok(self, monkeypatch):
+        monkeypatch.setenv("CONFIRM_AUTONOMOUS", "yes")
+        _validate_mode_transition(TradingMode.AUTONOMOUS)  # kein Fehler
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  EmergencyStop
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestEmergencyStop:
+
+    def test_emergency_stop_pauses_trading(self):
+        orch, _ = _make_orch()
+        orch.emergency_stop()
+        assert orch.is_paused is True
+
+    def test_emergency_stop_calls_handler_drawdown_limit(self):
+        orch, mocks = _make_orch()
+        orch.emergency_stop()
+        mocks["emergency"].handle_drawdown_limit.assert_called_once()
+
+    def test_emergency_stop_without_handler_closes_via_executor(self):
+        orch, mocks = _make_orch(emergency=False)
+        mocks["executor"].get_open_positions.return_value = [
+            {"ticket": 1}, {"ticket": 2},
+        ]
+        orch.emergency_stop()
+        assert mocks["executor"].close_position.call_count == 2
+
+    def test_emergency_stop_without_handler_calls_get_open_positions(self):
+        orch, mocks = _make_orch(emergency=False)
+        mocks["executor"].get_open_positions.return_value = []
+        orch.emergency_stop()
+        mocks["executor"].get_open_positions.assert_called_once()
+
+    def test_emergency_stop_cycle_returns_paused_after(self):
+        orch, _ = _make_orch()
+        orch.emergency_stop()
+        result = orch.run_cycle("EURUSD")
+        assert result["reason"] == "trading_paused"
+
+    def test_emergency_stop_logs_to_audit(self):
+        orch, mocks = _make_orch()
+        orch.emergency_stop()
+        mocks["audit_log"].log_error.assert_called()
+
+    def test_emergency_stop_handler_exception_does_not_propagate(self):
+        orch, mocks = _make_orch()
+        mocks["emergency"].handle_drawdown_limit.side_effect = RuntimeError("handler down")
+        orch.emergency_stop()  # Kein Fehler erwartet
+        assert orch.is_paused is True
+
+    def test_emergency_stop_executor_exception_does_not_propagate(self):
+        orch, mocks = _make_orch(emergency=False)
+        mocks["executor"].get_open_positions.side_effect = RuntimeError("mt5 down")
+        orch.emergency_stop()  # Kein Fehler erwartet
+        assert orch.is_paused is True

@@ -440,4 +440,4 @@ class TestOrchestratorPause:
         orch.resume()
         result = orch.run_cycle("EURUSD")
         assert result["reason"] != "trading_paused"
-        assert result["action"] in ("open_buy", "open_sell", "flat", "skipped")
+        assert result["action"] in ("open_buy", "open_sell", "flat", "skipped", "suggested")
