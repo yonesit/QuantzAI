@@ -255,6 +255,28 @@ class TestDashboardSnapshot:
         snap = DashboardSnapshot(currency="$")
         assert snap.currency == "$"
 
+    def test_new_fields_default_none(self):
+        snap = DashboardSnapshot()
+        assert snap.equity         is None
+        assert snap.account_number is None
+        assert snap.server         is None
+        assert snap.leverage       is None
+        assert snap.is_demo        is None
+
+    def test_new_fields_set(self):
+        snap = DashboardSnapshot(
+            equity=9_800.0,
+            account_number=383619,
+            server="FusionMarkets-Demo",
+            leverage=100,
+            is_demo=True,
+        )
+        assert snap.equity         == 9_800.0
+        assert snap.account_number == 383619
+        assert snap.server         == "FusionMarkets-Demo"
+        assert snap.leverage       == 100
+        assert snap.is_demo        is True
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  _AccountCard (Qt)
@@ -297,6 +319,56 @@ class TestAccountCard:
         qtbot.addWidget(card)
         card.refresh(snap_full)
         assert "11" in card._ath_lbl.text() or "000" in card._ath_lbl.text()
+
+    def test_equity_hidden_when_none(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot())
+        assert card._equity_lbl.isHidden()
+
+    def test_equity_shown_when_set(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(balance=10_000.0, equity=9_900.0))
+        assert not card._equity_lbl.isHidden()
+        assert "9" in card._equity_lbl.text()
+
+    def test_account_details_hidden_when_empty(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot())
+        assert card._account_details_lbl.isHidden()
+
+    def test_account_details_shows_number(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(account_number=383619))
+        assert not card._account_details_lbl.isHidden()
+        assert "383619" in card._account_details_lbl.text()
+
+    def test_account_details_shows_demo(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(is_demo=True))
+        assert "Demo" in card._account_details_lbl.text()
+
+    def test_account_details_shows_live(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(is_demo=False))
+        assert "Live" in card._account_details_lbl.text()
+
+    def test_account_details_shows_leverage(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(leverage=100))
+        assert "100" in card._account_details_lbl.text()
+
+    def test_account_details_shows_server(self, qtbot: QtBot):
+        card = _AccountCard()
+        qtbot.addWidget(card)
+        card.refresh(DashboardSnapshot(server="FusionMarkets-Demo"))
+        assert "FusionMarkets" in card._account_details_lbl.text()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -454,6 +526,31 @@ class TestPositionsTable:
         t = _PositionsTable()
         qtbot.addWidget(t)
         assert t.table.columnCount() == 5
+
+    def test_header_labels_full_text(self, qtbot: QtBot):
+        from PySide6.QtWidgets import QHeaderView
+        t = _PositionsTable()
+        qtbot.addWidget(t)
+        hdr = t.table.horizontalHeader()
+        labels = [
+            t.table.horizontalHeaderItem(i).text()
+            for i in range(t.table.columnCount())
+        ]
+        assert labels == ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L"]
+
+    def test_header_resize_mode_is_resize_to_contents(self, qtbot: QtBot):
+        from PySide6.QtWidgets import QHeaderView
+        t = _PositionsTable()
+        qtbot.addWidget(t)
+        hdr = t.table.horizontalHeader()
+        # First 4 sections should be ResizeToContents; last stretches
+        for i in range(4):
+            assert hdr.sectionResizeMode(i) == QHeaderView.ResizeMode.ResizeToContents
+
+    def test_last_section_stretches(self, qtbot: QtBot):
+        t = _PositionsTable()
+        qtbot.addWidget(t)
+        assert t.table.horizontalHeader().stretchLastSection()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

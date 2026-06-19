@@ -40,6 +40,8 @@ def _fresh_stub(initialize_rv=True) -> types.ModuleType:
     mt5.symbols_get       = MagicMock(return_value=None)
     mt5.last_error        = MagicMock(return_value=(0, ""))
     mt5.terminal_info     = MagicMock(return_value=None)
+    mt5.account_info      = MagicMock(return_value=None)
+    mt5.ACCOUNT_TRADE_MODE_DEMO = 0
     return mt5
 
 
@@ -319,3 +321,87 @@ class TestHealthCheck:
         connector._health_check()
 
         stub.initialize.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: Account-Info
+# ---------------------------------------------------------------------------
+
+def _make_account_info(**kw) -> MagicMock:
+    acc = MagicMock()
+    acc.login      = kw.get("login",      383619)
+    acc.name       = kw.get("name",       "DEMO_007")
+    acc.server     = kw.get("server",     "FusionMarkets-Demo")
+    acc.balance    = kw.get("balance",    10_000.0)
+    acc.equity     = kw.get("equity",     10_000.0)
+    acc.currency   = kw.get("currency",   "EUR")
+    acc.leverage   = kw.get("leverage",   100)
+    acc.trade_mode = kw.get("trade_mode", 0)   # 0 = DEMO
+    return acc
+
+
+class TestGetAccountInfo:
+
+    def test_returns_dict(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info()
+        info = connected_connector.get_account_info()
+        assert isinstance(info, dict)
+
+    def test_expected_keys(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info()
+        info = connected_connector.get_account_info()
+        for key in ("login", "name", "server", "balance", "equity",
+                    "currency", "leverage", "is_demo"):
+            assert key in info, f"Key '{key}' fehlt"
+
+    def test_balance_value(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(balance=12_345.67)
+        info = connected_connector.get_account_info()
+        assert info["balance"] == 12_345.67
+
+    def test_equity_value(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(equity=11_000.0)
+        info = connected_connector.get_account_info()
+        assert info["equity"] == 11_000.0
+
+    def test_login_value(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(login=99999)
+        info = connected_connector.get_account_info()
+        assert info["login"] == 99999
+
+    def test_currency_value(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(currency="USD")
+        info = connected_connector.get_account_info()
+        assert info["currency"] == "USD"
+
+    def test_leverage_value(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(leverage=500)
+        info = connected_connector.get_account_info()
+        assert info["leverage"] == 500
+
+    def test_demo_detected(self, connected_connector, stub):
+        stub.ACCOUNT_TRADE_MODE_DEMO = 0
+        stub.account_info.return_value = _make_account_info(trade_mode=0)
+        info = connected_connector.get_account_info()
+        assert info["is_demo"] is True
+
+    def test_live_detected(self, connected_connector, stub):
+        stub.ACCOUNT_TRADE_MODE_DEMO = 0
+        stub.account_info.return_value = _make_account_info(trade_mode=2)
+        info = connected_connector.get_account_info()
+        assert info["is_demo"] is False
+
+    def test_not_connected_raises(self, connector):
+        with pytest.raises(MT5ConnectionError):
+            connector.get_account_info()
+
+    def test_account_info_none_raises(self, connected_connector, stub):
+        stub.account_info.return_value = None
+        stub.last_error.return_value = (5001, "Access denied")
+        with pytest.raises(MT5DataError):
+            connected_connector.get_account_info()
+
+    def test_server_name_returned(self, connected_connector, stub):
+        stub.account_info.return_value = _make_account_info(server="ICMarkets-Live01")
+        info = connected_connector.get_account_info()
+        assert info["server"] == "ICMarkets-Live01"

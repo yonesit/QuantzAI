@@ -401,6 +401,35 @@ class MT5Connector:
             "swap_short": info.swap_short,
         }
 
+    def get_account_info(self) -> dict:
+        """
+        Gibt Kontoinformationen zurueck.
+
+        Returns dict mit: login, name, server, balance, equity,
+                          currency, leverage, is_demo
+        """
+        if not self.is_connected:
+            raise MT5ConnectionError("Nicht verbunden.")
+
+        mt5 = _load_mt5()
+        acc = mt5.account_info()
+        if acc is None:
+            raise MT5DataError(
+                f"account_info() fehlgeschlagen: {mt5.last_error()}"
+            )
+
+        demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)
+        return {
+            "login":    acc.login,
+            "name":     acc.name,
+            "server":   acc.server,
+            "balance":  acc.balance,
+            "equity":   acc.equity,
+            "currency": acc.currency,
+            "leverage": acc.leverage,
+            "is_demo":  acc.trade_mode == demo_mode,
+        }
+
     def get_available_symbols(self) -> list[str]:
         """Gibt alle vom Broker angebotenen Symbole zurueck."""
         if not self.is_connected:

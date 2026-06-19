@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 from gui.design.theme import ThemeManager, ThemeMode, get_theme_manager
 from gui.views.backtest_view import BacktestBackend, BacktestView
 from gui.views.cockpit_view import CockpitBackend, CockpitView
-from gui.views.dashboard_view import DashboardBackend, DashboardView
+from gui.views.dashboard_view import DashboardBackend, DashboardSnapshot, DashboardView
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 from gui.views.settings_view import SettingsBackend, SettingsView
@@ -240,9 +240,10 @@ class TradingStatusBar(QWidget):
         super().__init__(parent)
         self.setObjectName("trading_status_bar")
 
-        self._connection = ConnectionStatus.DISCONNECTED
-        self._mode       = TradingMode.SUGGEST
-        self._paused     = True
+        self._connection   = ConnectionStatus.DISCONNECTED
+        self._mode         = TradingMode.SUGGEST
+        self._paused       = True
+        self._account_info: Optional[dict] = None
 
         self._build()
         self._refresh()
@@ -254,15 +255,19 @@ class TradingStatusBar(QWidget):
 
         self._conn_dot    = QLabel()
         self._conn_label  = QLabel()
+        self._account_lbl = QLabel()
         self._mode_label  = QLabel()
         self._bot_label   = QLabel()
 
         for lbl in (self._conn_dot, self._conn_label,
-                    self._mode_label, self._bot_label):
+                    self._account_lbl, self._mode_label, self._bot_label):
             lbl.setObjectName("status_label")
+
+        self._account_lbl.setVisible(False)
 
         layout.addWidget(self._conn_dot)
         layout.addWidget(self._conn_label)
+        layout.addWidget(self._account_lbl)
         layout.addWidget(_vline())
         layout.addWidget(self._mode_label)
         layout.addWidget(_vline())
@@ -280,6 +285,20 @@ class TradingStatusBar(QWidget):
         self._conn_dot.setStyleSheet(f"color: {dot_color}; font-size: 9pt;")
         self._conn_label.setText(f"MT5/OANDA: {self._connection.value}")
 
+        if self._account_info is not None:
+            info    = self._account_info
+            login   = info.get("login") or "?"
+            balance = info.get("balance")
+            curr    = info.get("currency", "")
+            is_demo = info.get("is_demo")
+            bal_str = f"{curr}{balance:,.2f}" if balance is not None else "--"
+            tag     = "Demo" if is_demo is True else ("Live" if is_demo is False else "")
+            demo_part = f" {tag}" if tag else ""
+            self._account_lbl.setText(f"#{login}{demo_part} | {bal_str}")
+            self._account_lbl.setVisible(True)
+        else:
+            self._account_lbl.setVisible(False)
+
         self._mode_label.setText(f"Modus: {self._mode.value}")
 
         if self._paused:
@@ -293,6 +312,10 @@ class TradingStatusBar(QWidget):
 
     def set_connection(self, status: ConnectionStatus) -> None:
         self._connection = status
+        self._refresh()
+
+    def set_account_info(self, info: Optional[dict]) -> None:
+        self._account_info = info
         self._refresh()
 
     def set_trading_mode(self, mode: TradingMode) -> None:
@@ -328,6 +351,14 @@ class TradingStatusBar(QWidget):
     @property
     def bot_label(self) -> QLabel:
         return self._bot_label
+
+    @property
+    def account_label(self) -> QLabel:
+        return self._account_lbl
+
+    @property
+    def account_info(self) -> Optional[dict]:
+        return self._account_info
 
 
 def _vline() -> QFrame:
@@ -683,6 +714,32 @@ def _try_connect_mt5(
         return None
 
 
+class _MT5AccountBackend:
+    """
+    Minimales DashboardBackend das Kontodaten live aus MT5Connector bezieht.
+    Implementiert das DashboardBackend-Protokoll per duck-typing.
+    """
+
+    def __init__(self, connector: Any) -> None:
+        self._connector = connector
+
+    def fetch_snapshot(self) -> DashboardSnapshot:
+        try:
+            info = self._connector.get_account_info()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MT5 Account-Info fehlgeschlagen: {exc}", exc=exc)
+            return DashboardSnapshot()
+        return DashboardSnapshot(
+            balance=info.get("balance"),
+            currency=info.get("currency", "€"),
+            equity=info.get("equity"),
+            account_number=info.get("login"),
+            server=info.get("server"),
+            leverage=info.get("leverage"),
+            is_demo=info.get("is_demo"),
+        )
+
+
 def create_app(argv: list[str] | None = None) -> QApplication:
     """Erstellt und konfiguriert die QApplication."""
     app = QApplication(argv if argv is not None else sys.argv)
@@ -697,7 +754,33 @@ def main() -> int:
     app = create_app()
     window = MainWindow()
     window.show()
-    _try_connect_mt5(window.trading_status_bar)
+    connector = _try_connect_mt5(window.trading_status_bar)
+    if connector is not None:
+        backend = _MT5AccountBackend(connector)
+        # Initiale Kontodaten sofort darstellen
+        try:
+            snap = backend.fetch_snapshot()
+            window.dashboard_view.update_display(snap)
+            window.trading_status_bar.set_account_info({
+                "login":    snap.account_number,
+                "balance":  snap.balance,
+                "currency": snap.currency,
+                "is_demo":  snap.is_demo,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Initialer Account-Abruf fehlgeschlagen: {exc}", exc=exc)
+        # Polling einrichten – Dashboard aktualisiert sich alle 5 s
+        window.dashboard_view.set_backend(backend)
+        window.dashboard_view.start_polling()
+        # Statusleiste bei jeder Dashboard-Aktualisierung mitziehen
+        window.dashboard_view.data_refreshed.connect(
+            lambda s: window.trading_status_bar.set_account_info({
+                "login":    s.account_number,
+                "balance":  s.balance,
+                "currency": s.currency,
+                "is_demo":  s.is_demo,
+            })
+        )
     return app.exec()
 
 

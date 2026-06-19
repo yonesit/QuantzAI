@@ -28,6 +28,7 @@ from typing import Optional, Protocol, runtime_checkable
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QFrame,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -78,6 +79,13 @@ class DashboardSnapshot:
     day_start_balance: float | None = None
     all_time_high:     float | None = None
     currency:          str = "€"
+
+    # Erweiterte Kontodaten (nach MT5-Verbindung befuellt)
+    equity:         float | None = None
+    account_number: int | None   = None
+    server:         str | None   = None
+    leverage:       int | None   = None
+    is_demo:        bool | None  = None
 
     # Drawdown / Tagesverlust
     drawdown_pct:           float = 0.0
@@ -263,6 +271,20 @@ class _AccountCard(QFrame):
         self._ath_lbl.setToolTip("Höchster je erreichter Kontostand (All-Time-High)")
         lay.addWidget(self._ath_lbl)
 
+        self._equity_lbl = QLabel("")
+        self._equity_lbl.setObjectName("account_equity")
+        self._equity_lbl.setProperty("secondary", "true")
+        self._equity_lbl.setToolTip("Aktuelles Eigenkapital (Balance +/- offene Positionen)")
+        self._equity_lbl.setVisible(False)
+        lay.addWidget(self._equity_lbl)
+
+        self._account_details_lbl = QLabel("")
+        self._account_details_lbl.setObjectName("account_details")
+        self._account_details_lbl.setProperty("secondary", "true")
+        self._account_details_lbl.setToolTip("Kontonummer | Server | Kontotyp | Hebel")
+        self._account_details_lbl.setVisible(False)
+        lay.addWidget(self._account_details_lbl)
+
     def refresh(self, snap: DashboardSnapshot) -> None:
         self._balance_lbl.setText(_fmt_balance(snap.balance, snap.currency))
 
@@ -281,6 +303,31 @@ class _AccountCard(QFrame):
         self._ath_lbl.setText(
             f"Allzeithoch: {_fmt_balance(snap.all_time_high, snap.currency)}"
         )
+
+        if snap.equity is not None:
+            self._equity_lbl.setText(
+                f"Equity: {_fmt_balance(snap.equity, snap.currency)}"
+            )
+            self._equity_lbl.setVisible(True)
+        else:
+            self._equity_lbl.setVisible(False)
+
+        parts: list[str] = []
+        if snap.account_number is not None:
+            parts.append(f"#{snap.account_number}")
+        if snap.server:
+            parts.append(snap.server)
+        if snap.is_demo is True:
+            parts.append("Demo")
+        elif snap.is_demo is False:
+            parts.append("Live")
+        if snap.leverage is not None:
+            parts.append(f"1:{snap.leverage}")
+        if parts:
+            self._account_details_lbl.setText(" | ".join(parts))
+            self._account_details_lbl.setVisible(True)
+        else:
+            self._account_details_lbl.setVisible(False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -446,22 +493,15 @@ class _PositionsTable(QFrame):
         self._table = QTableWidget(0, len(_POS_HEADERS))
         self._table.setObjectName("positions_table")
         self._table.setHorizontalHeaderLabels(_POS_HEADERS)
-        self._table.horizontalHeader().setStretchLastSection(True)
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setStretchLastSection(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setMinimumHeight(100)
         lay.addWidget(self._table)
-
-        for hdr, tooltip in zip(_POS_HEADERS, [
-            "Handelssymbol",
-            "Handelsrichtung (long = Kauf, short = Verkauf)",
-            "Lot-Größe der Position",
-            "Eröffnungspreis der Position",
-            "Aktueller unrealisierter Gewinn/Verlust",
-        ]):
-            pass  # Tooltips werden per Header gesetzt
 
     def refresh(self, snap: DashboardSnapshot) -> None:
         positions = snap.positions
@@ -486,8 +526,6 @@ class _PositionsTable(QFrame):
                         __import__("PySide6.QtGui", fromlist=["QColor"]).QColor(color)
                     )
                 self._table.setItem(row, col, item)
-
-        self._table.resizeColumnsToContents()
 
     @property
     def table(self) -> QTableWidget:

@@ -49,6 +49,7 @@ from gui.app import (
     Section,
     TradingMode,
     TradingStatusBar,
+    _MT5AccountBackend,
     _load_env_file,
     _try_connect_mt5,
 )
@@ -200,6 +201,42 @@ class TestTradingStatusBar:
 
     def test_disconnected_label_text(self, status_bar: TradingStatusBar):
         assert ConnectionStatus.DISCONNECTED.value in status_bar.connection_label.text()
+
+    def test_account_info_default_none(self, status_bar: TradingStatusBar):
+        assert status_bar.account_info is None
+
+    def test_account_label_hidden_by_default(self, status_bar: TradingStatusBar):
+        assert status_bar.account_label.isHidden()
+
+    def test_set_account_info_shows_label(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 383619, "balance": 10_000.0, "currency": "EUR", "is_demo": True})
+        assert not status_bar.account_label.isHidden()
+
+    def test_set_account_info_none_hides_label(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 1, "balance": 100.0, "currency": "EUR", "is_demo": True})
+        status_bar.set_account_info(None)
+        assert status_bar.account_label.isHidden()
+
+    def test_set_account_info_shows_login(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 99999, "balance": 100.0, "currency": "EUR", "is_demo": False})
+        assert "99999" in status_bar.account_label.text()
+
+    def test_set_account_info_shows_balance(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 1, "balance": 12_345.67, "currency": "EUR", "is_demo": True})
+        assert "12" in status_bar.account_label.text()
+
+    def test_set_account_info_demo_tag(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 1, "balance": 0.0, "currency": "EUR", "is_demo": True})
+        assert "Demo" in status_bar.account_label.text()
+
+    def test_set_account_info_live_tag(self, status_bar: TradingStatusBar):
+        status_bar.set_account_info({"login": 1, "balance": 0.0, "currency": "EUR", "is_demo": False})
+        assert "Live" in status_bar.account_label.text()
+
+    def test_set_account_info_stores_info(self, status_bar: TradingStatusBar):
+        info = {"login": 42, "balance": 500.0, "currency": "USD", "is_demo": False}
+        status_bar.set_account_info(info)
+        assert status_bar.account_info is info
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -571,3 +608,81 @@ class TestTryConnectMT5:
         mock = MagicMock()
         _try_connect_mt5(self._bar(qtbot), _connector_factory=lambda *a: mock)
         mock.connect.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  _MT5AccountBackend
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_account_dict(**kw) -> dict:
+    return {
+        "login":    kw.get("login",    383619),
+        "name":     kw.get("name",     "DEMO_007"),
+        "server":   kw.get("server",   "FusionMarkets-Demo"),
+        "balance":  kw.get("balance",  10_000.0),
+        "equity":   kw.get("equity",   10_000.0),
+        "currency": kw.get("currency", "EUR"),
+        "leverage": kw.get("leverage", 100),
+        "is_demo":  kw.get("is_demo",  True),
+    }
+
+
+class TestMT5AccountBackend:
+
+    def _backend(self, account_dict=None):
+        connector = MagicMock()
+        if account_dict is None:
+            account_dict = _make_account_dict()
+        connector.get_account_info.return_value = account_dict
+        return _MT5AccountBackend(connector)
+
+    def test_fetch_snapshot_returns_snapshot(self):
+        from gui.views.dashboard_view import DashboardSnapshot
+        snap = self._backend().fetch_snapshot()
+        assert isinstance(snap, DashboardSnapshot)
+
+    def test_fetch_snapshot_balance(self):
+        snap = self._backend(_make_account_dict(balance=12_500.0)).fetch_snapshot()
+        assert snap.balance == 12_500.0
+
+    def test_fetch_snapshot_equity(self):
+        snap = self._backend(_make_account_dict(equity=11_000.0)).fetch_snapshot()
+        assert snap.equity == 11_000.0
+
+    def test_fetch_snapshot_currency(self):
+        snap = self._backend(_make_account_dict(currency="USD")).fetch_snapshot()
+        assert snap.currency == "USD"
+
+    def test_fetch_snapshot_account_number(self):
+        snap = self._backend(_make_account_dict(login=99999)).fetch_snapshot()
+        assert snap.account_number == 99999
+
+    def test_fetch_snapshot_server(self):
+        snap = self._backend(_make_account_dict(server="ICMarkets-Live")).fetch_snapshot()
+        assert snap.server == "ICMarkets-Live"
+
+    def test_fetch_snapshot_leverage(self):
+        snap = self._backend(_make_account_dict(leverage=500)).fetch_snapshot()
+        assert snap.leverage == 500
+
+    def test_fetch_snapshot_is_demo_true(self):
+        snap = self._backend(_make_account_dict(is_demo=True)).fetch_snapshot()
+        assert snap.is_demo is True
+
+    def test_fetch_snapshot_is_demo_false(self):
+        snap = self._backend(_make_account_dict(is_demo=False)).fetch_snapshot()
+        assert snap.is_demo is False
+
+    def test_fetch_snapshot_on_error_returns_empty(self):
+        from gui.views.dashboard_view import DashboardSnapshot
+        connector = MagicMock()
+        connector.get_account_info.side_effect = RuntimeError("MT5 crashed")
+        backend = _MT5AccountBackend(connector)
+        snap = backend.fetch_snapshot()
+        assert isinstance(snap, DashboardSnapshot)
+        assert snap.balance is None
+
+    def test_fetch_snapshot_calls_get_account_info(self):
+        b = self._backend()
+        b.fetch_snapshot()
+        b._connector.get_account_info.assert_called_once()
