@@ -51,6 +51,7 @@ from gui.views.dashboard_view import DashboardBackend, DashboardSnapshot, Dashbo
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 from gui.views.settings_view import SettingsBackend, SettingsView
+from gui.dialogs.trade_confirmation_dialog import GuiConfirmationCallback
 from gui.widgets.activity_log_widget import ActivityLogWidget
 from gui.widgets.bot_controls_widget import BotControlsWidget, BotState
 
@@ -482,6 +483,7 @@ class MainWindow(QMainWindow):
         backtest_backend:     Optional[BacktestBackend]     = None,
         settings_backend:     Optional[SettingsBackend]     = None,
         bot_controls_widget:  Optional[BotControlsWidget]  = None,
+        confirmation_callback: Optional[GuiConfirmationCallback] = None,
         parent:               Optional[QWidget]             = None,
     ) -> None:
         super().__init__(parent)
@@ -496,6 +498,7 @@ class MainWindow(QMainWindow):
         self._backtest_backend    = backtest_backend
         self._settings_backend    = settings_backend
         self._bot_controls_widget = bot_controls_widget
+        self._confirmation_callback_inject = confirmation_callback
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -573,6 +576,14 @@ class MainWindow(QMainWindow):
             self._activity_log.append_cycle_result
         )
 
+        # Confirmation-Callback fuer CONFIRM_REQUIRED-Modus
+        if self._confirmation_callback_inject is not None:
+            self._gui_confirmation_callback = self._confirmation_callback_inject
+        else:
+            self._gui_confirmation_callback = GuiConfirmationCallback(
+                parent_widget=self
+            )
+
         # Status-Bar (permanent am unteren Rand)
         self._trading_status = TradingStatusBar()
         status_bar = QStatusBar()
@@ -609,6 +620,10 @@ class MainWindow(QMainWindow):
     @property
     def activity_log(self) -> ActivityLogWidget:
         return self._activity_log
+
+    @property
+    def confirmation_callback(self) -> GuiConfirmationCallback:
+        return self._gui_confirmation_callback
 
     @property
     def sidebar(self) -> NavigationSidebar:

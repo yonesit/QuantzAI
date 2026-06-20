@@ -304,6 +304,17 @@ class TradingOrchestrator:
                     confirmed = self._confirmation_callback.confirm_order(
                         symbol, direction, lot_size, sl_price, tp_price
                     )
+                    # Angepasste Lot-Groesse von GuiConfirmationCallback uebernehmen
+                    if confirmed and hasattr(
+                        self._confirmation_callback, "last_confirmed_lot_size"
+                    ):
+                        adj = self._confirmation_callback.last_confirmed_lot_size
+                        if adj is not None and adj > 0:
+                            lot_size = adj
+                            logger.info(
+                                "Zyklus | {sym} | Angepasste Lot-Groesse: {l}",
+                                sym=symbol, l=lot_size,
+                            )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "ConfirmationCallback Fehler: {exc} -> kein Trade", exc=exc
@@ -466,6 +477,17 @@ class TradingOrchestrator:
         thread-sicher an die GUI weiterzuleiten. None entfernt den Callback.
         """
         self._activity_callback = callback
+
+    def set_confirmation_callback(
+        self, callback: Optional[ConfirmationCallback]
+    ) -> None:
+        """
+        Setzt den ConfirmationCallback fuer den CONFIRM_REQUIRED-Modus.
+
+        Ermoeglicht das nachtaegliche Einhaengen der GUI-Callback-Instanz
+        (z.B. nach dem Aufbau des Hauptfensters).
+        """
+        self._confirmation_callback = callback
 
     def set_mode(self, new_mode: TradingMode) -> None:
         """
