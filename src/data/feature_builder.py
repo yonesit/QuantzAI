@@ -187,6 +187,7 @@ class FeatureBuilder:
 
         features = pd.DataFrame(index=df.index)
         features["timestamp"] = df["timestamp"]
+        features["close"]     = df["close"]
 
         # â"€â"€ Trend-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
