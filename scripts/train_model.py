@@ -46,8 +46,13 @@ def _load_features(symbol: str, timeframe: str = "H1") -> pd.DataFrame:
 
 
 def _build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Waehlt Feature-Spalten aus (keine label/timestamp-aehnlichen Spalten)."""
-    exclude = {"label", "timestamp", "open", "volume"}
+    """Waehlt Feature-Spalten aus.
+
+    close/high/low bleiben als Strukturspalten im Parquet (fuer LabelBuilder
+    und Backtest-Preisserie), sind aber keine Modell-Features: sie leaken
+    aktuelle Barrichtung direkt in das Modell.
+    """
+    exclude = {"label", "timestamp", "open", "volume", "close", "high", "low"}
     feat_cols = [c for c in df.columns if c not in exclude]
     return df[feat_cols + (["timestamp"] if "timestamp" in df.columns else [])], feat_cols
 

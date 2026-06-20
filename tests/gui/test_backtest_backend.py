@@ -381,7 +381,8 @@ class TestRunBacktest:
             call_kwargs = MockRunner.return_value.run_with_model.call_args.kwargs
         assert call_kwargs.get("is_end") == "2023-12-31"
 
-    def test_no_is_split_passes_none(self, tmp_path):
+    def test_no_is_split_auto_computes_split(self, tmp_path):
+        """Wenn is_split=None, berechnet Backend automatisch 70/30-Split."""
         _write_features(tmp_path)
         _write_model(tmp_path)
         mock_model = MagicMock()
@@ -394,7 +395,10 @@ class TestRunBacktest:
                 "EURUSD", "H1", "2023-01-01", "2024-01-01", None, 10_000.0
             )
             call_kwargs = MockRunner.return_value.run_with_model.call_args.kwargs
-        assert call_kwargs.get("is_end") is None
+        # Auto-split muss gesetzt sein (nicht None) und im Zeitraum liegen
+        is_end = call_kwargs.get("is_end")
+        assert is_end is not None
+        assert "2023" in str(is_end)  # 70% von 2023-01-01..2024-01-01 liegt in 2023
 
 
 # ─────────────────────────────────────────────────────────────────────────────

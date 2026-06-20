@@ -269,7 +269,9 @@ class SignalModel:
             y_shuffled = rng.permutation(y)
             perm_model = lgb.LGBMClassifier(**self._params)
             perm_model.fit(X, y_shuffled)
-            perm_scores.append(self._score_model(perm_model, X, y_shuffled, metric))
+            # Bewertung auf ORIGINALEN Labels y, nicht auf y_shuffled –
+            # misst ob echte Label-Struktur besser vorhersagbar ist als zufaellige.
+            perm_scores.append(self._score_model(perm_model, X, y, metric))
 
         perm_arr = np.array(perm_scores)
         p_value = float((perm_arr >= real_score).mean())
@@ -299,6 +301,11 @@ class SignalModel:
             raise RuntimeError("SignalModel wurde noch nicht trainiert. Rufe train() zuerst auf.")
 
     def _to_2d(self, row: pd.DataFrame | pd.Series) -> np.ndarray:
+        if isinstance(row, pd.DataFrame) and self._feature_names:
+            # Nur die beim Training verwendeten Spalten in korrekter Reihenfolge –
+            # verhindert Fehler wenn der uebergebene DataFrame zusaetzliche Spalten
+            # (z.B. close, high, low aus dem Parquet) enthaelt.
+            return row[self._feature_names].values.astype(float)
         if isinstance(row, pd.Series):
             return row.values.reshape(1, -1).astype(float)
         return row.values.astype(float)

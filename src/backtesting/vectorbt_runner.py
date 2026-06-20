@@ -237,6 +237,8 @@ class BacktestRunner:
         is_mask: Optional[pd.Series] = None
         if is_end is not None:
             is_end_ts = pd.Timestamp(is_end)
+            if features_df.index.tz is not None and is_end_ts.tzinfo is None:
+                is_end_ts = is_end_ts.tz_localize(features_df.index.tz)
             is_mask = pd.Series(
                 features_df.index <= is_end_ts, index=features_df.index
             )

@@ -111,17 +111,27 @@ class BacktestGUIBackend:
         features_df = self._load_features(symbol, timeframe, start, end)
         signal_func = self._load_signal_func()
 
+        # Automatischer 70/30 IS/OOS-Split wenn kein Datum vorgegeben –
+        # IS/OOS-Sharpe sind sonst immer leer und Overfitting bleibt unsichtbar.
+        effective_split = is_split
+        if effective_split is None:
+            start_ts = pd.Timestamp(start)
+            end_ts   = pd.Timestamp(end)
+            split_ts = start_ts + (end_ts - start_ts) * 0.7
+            effective_split = str(split_ts.date())
+            logger.info("IS/OOS-Split auto (70/30): {s}", s=effective_split)
+
         freq   = timeframe_to_freq(timeframe)
         runner = BacktestRunner(BacktestConfig(init_cash=init_cash, freq=freq))
 
         logger.info(
             "GUI-Backtest: {sym}/{tf} | {s} – {e} | IS-Ende: {is_end}",
-            sym=symbol, tf=timeframe, s=start, e=end, is_end=is_split,
+            sym=symbol, tf=timeframe, s=start, e=end, is_end=effective_split,
         )
         return runner.run_with_model(
             features_df=features_df,
             signal_func=signal_func,
-            is_end=is_split,
+            is_end=effective_split,
         )
 
     def get_available_symbols(self) -> list[str]:

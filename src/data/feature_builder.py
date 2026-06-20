@@ -285,16 +285,16 @@ class FeatureBuilder:
         # â"€â"€ Abgeleitete Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         # KEIN shift() â€" werden aus aktueller Candle berechnet (kein Zukunftswissen)
 
-        features["candle_body"]      = (close - open_).abs()
-        features["candle_direction"] = np.sign(close - open_).astype(int)
-        features["high_low_range"]   = high - low
-        # close_position: wo schliesst die Kerze innerhalb der Range [0,1]
+        # shift(1): Modell sieht Eigenschaften der abgeschlossenen Vorkerze,
+        # nicht der aktuellen Bar – verhindert Korrelation mit LabelBuilder-TP/SL.
         hl_range = high - low
-        features["close_position"]   = np.where(
-            hl_range > 0,
-            (close - low) / hl_range,
-            0.5,
-        )
+        features["candle_body"]      = (close - open_).abs().shift(1)
+        features["candle_direction"] = (close - open_).apply(np.sign).astype(int).shift(1)
+        features["high_low_range"]   = (high - low).shift(1)
+        features["close_position"]   = pd.Series(
+            np.where(hl_range > 0, (close - low) / hl_range, 0.5),
+            index=close.index,
+        ).shift(1)
 
         # â"€â"€ Zeit-Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
