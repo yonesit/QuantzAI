@@ -126,8 +126,9 @@ class TradingOrchestrator:
         self._balance_getter         = balance_getter
         self._confirmation_callback  = confirmation_callback
 
-        self._stop_event = threading.Event()
-        self._paused     = False
+        self._stop_event         = threading.Event()
+        self._paused             = False
+        self._activity_callback: Optional[Callable[[dict], None]] = None
 
         # Mode validation and initialisation
         _validate_mode_transition(mode)
@@ -157,11 +158,14 @@ class TradingOrchestrator:
         result: dict[str, Any] = {
             "symbol":          symbol,
             "signal":          None,
+            "confidence":      None,
             "action":          "skipped",
             "reason":          "",
             "ticket":          None,
             "lot_size":        None,
             "step_stopped_at": None,
+            "checks":          [],
+            "timestamp":       datetime.now(timezone.utc),
         }
 
         # ── Pause-Check ───────────────────────────────────────────────────────
@@ -192,26 +196,35 @@ class TradingOrchestrator:
         # ── Schritt 2: RiskGuard ──────────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 2: RiskGuard", sym=symbol)
         if not self._risk_guard.is_trading_allowed():
+            result["checks"].append({"name": "RiskGuard", "passed": False, "reason": "Handelssperre"})
             result["reason"]          = "risk_guard_blocked"
             result["step_stopped_at"] = "risk_guard"
             self._log_step("CYCLE_RISK_GUARD_BLOCKED", {"symbol": symbol})
             logger.info("Zyklus | {sym} | RiskGuard blockiert -> Abbruch", sym=symbol)
             return result
+        result["checks"].append({"name": "RiskGuard", "passed": True, "reason": ""})
 
         # ── Schritt 3: PreTradeCheck ──────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 3: PreTradeCheck", sym=symbol)
         safe, check_reason = self._pre_trade.is_safe_to_trade(symbol)
         if not safe:
+            result["checks"].append({"name": "PreTradeCheck", "passed": False, "reason": check_reason})
             result["reason"]          = f"pre_trade_check_failed: {check_reason}"
             result["step_stopped_at"] = "pre_trade_check"
             self._log_step("CYCLE_PRE_TRADE_BLOCKED", {"symbol": symbol, "reason": check_reason})
             logger.info("Zyklus | {sym} | PreTradeCheck blockiert: {r} -> Abbruch", sym=symbol, r=check_reason)
             return result
+        result["checks"].append({"name": "PreTradeCheck", "passed": True, "reason": ""})
 
         # ── Schritt 4: Signal ─────────────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 4: Signal", sym=symbol)
         signal = self._signal_model.get_signal(features_row, self._confidence)
         result["signal"] = signal
+        try:
+            proba = self._signal_model.predict_proba(features_row)
+            result["confidence"] = max(proba.values())
+        except Exception:  # noqa: BLE001
+            pass
 
         # ── Schritt 5: Flat ───────────────────────────────────────────────────
         if signal == "flat":
@@ -227,12 +240,14 @@ class TradingOrchestrator:
         logger.info("Zyklus | {sym} | Schritt 6: CorrelationGuard", sym=symbol)
         open_positions = self._executor.get_open_positions()
         if not self._corr_guard.can_open_position(symbol, direction, open_positions):
+            result["checks"].append({"name": "CorrelationGuard", "passed": False, "reason": f"Korreliert ({direction})"})
             result["action"]          = "skipped"
             result["reason"]          = "correlation_guard_blocked"
             result["step_stopped_at"] = "correlation_guard"
             self._log_step("CYCLE_CORR_BLOCKED", {"symbol": symbol, "direction": direction})
             logger.info("Zyklus | {sym} | CorrelationGuard blockiert ({dir}) -> Abbruch", sym=symbol, dir=direction)
             return result
+        result["checks"].append({"name": "CorrelationGuard", "passed": True, "reason": ""})
 
         # ── Schritt 7: PositionSizer ──────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 7: PositionSizer", sym=symbol)
@@ -384,6 +399,11 @@ class TradingOrchestrator:
                     break
                 try:
                     result = self.run_cycle(symbol)
+                    if self._activity_callback is not None:
+                        try:
+                            self._activity_callback(result)
+                        except Exception as _cb_exc:  # noqa: BLE001
+                            logger.warning("activity_callback Fehler: {e}", e=_cb_exc)
                     logger.info(
                         "Zyklus abgeschlossen | {sym} | action={a} | reason={r}",
                         sym=symbol, a=result["action"], r=result["reason"],
@@ -435,6 +455,17 @@ class TradingOrchestrator:
     def mode(self) -> TradingMode:
         """Aktueller Betriebsmodus des Orchestrators."""
         return self._mode
+
+    def set_activity_callback(
+        self, callback: Optional[Callable[[dict], None]]
+    ) -> None:
+        """
+        Setzt einen Callback der nach jedem run_cycle()-Aufruf aufgerufen wird.
+
+        Wird vom BotWorker (QThread) gesetzt, um Zyklus-Ergebnisse
+        thread-sicher an die GUI weiterzuleiten. None entfernt den Callback.
+        """
+        self._activity_callback = callback
 
     def set_mode(self, new_mode: TradingMode) -> None:
         """

@@ -72,8 +72,9 @@ class BotWorker(QObject):
     sodass UI-Updates thread-sicher sind.
     """
 
-    stopped        = Signal()
-    error_occurred = Signal(str)
+    stopped          = Signal()
+    error_occurred   = Signal(str)
+    cycle_completed  = Signal(object)   # dict aus run_cycle()
 
     def __init__(
         self,
@@ -89,6 +90,8 @@ class BotWorker(QObject):
     @Slot()
     def run(self) -> None:
         """Blockierender Aufruf von run_loop – laeuft im Hintergrund-Thread."""
+        if hasattr(self._orchestrator, "set_activity_callback"):
+            self._orchestrator.set_activity_callback(self.cycle_completed.emit)
         try:
             self._orchestrator.run_loop(
                 self._symbols,
@@ -98,6 +101,8 @@ class BotWorker(QObject):
             logger.error("BotWorker: unbehandelte Exception: {e}", e=exc)
             self.error_occurred.emit(str(exc))
         finally:
+            if hasattr(self._orchestrator, "set_activity_callback"):
+                self._orchestrator.set_activity_callback(None)
             self.stopped.emit()
 
 
@@ -130,8 +135,9 @@ class BotControlsWidget(QWidget):
     parent           : Qt-Elternobjekt.
     """
 
-    state_changed  = Signal(object)   # BotState
-    error_occurred = Signal(str)
+    state_changed    = Signal(object)   # BotState
+    error_occurred   = Signal(str)
+    cycle_completed  = Signal(object)   # dict aus run_cycle() – weitergleitet von BotWorker
 
     def __init__(
         self,
@@ -287,6 +293,7 @@ class BotControlsWidget(QWidget):
         self._worker.stopped.connect(self._thread.quit)
         self._thread.finished.connect(self._on_thread_finished)
         self._worker.error_occurred.connect(self._on_worker_error)
+        self._worker.cycle_completed.connect(self.cycle_completed)
 
         self._thread.start()
         self._set_state(BotState.RUNNING)

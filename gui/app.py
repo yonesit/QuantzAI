@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -50,6 +51,7 @@ from gui.views.dashboard_view import DashboardBackend, DashboardSnapshot, Dashbo
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 from gui.views.settings_view import SettingsBackend, SettingsView
+from gui.widgets.activity_log_widget import ActivityLogWidget
 from gui.widgets.bot_controls_widget import BotControlsWidget, BotState
 
 
@@ -552,7 +554,13 @@ class MainWindow(QMainWindow):
         self._views[Section.SETTINGS] = self._settings_view
         self._content.addWidget(self._settings_view)
 
-        root.addWidget(self._content, stretch=1)
+        # Content + Activity-Log als vertikaler Splitter
+        content_splitter = QSplitter(Qt.Orientation.Vertical)
+        content_splitter.addWidget(self._content)
+        self._activity_log = ActivityLogWidget()
+        content_splitter.addWidget(self._activity_log)
+        content_splitter.setSizes([600, 200])
+        root.addWidget(content_splitter, stretch=1)
 
         # Bot-Steuerung unten in die Sidebar einhaengen
         if self._bot_controls_widget is not None:
@@ -561,6 +569,9 @@ class MainWindow(QMainWindow):
             self._bot_controls = BotControlsWidget()
         self._sidebar.layout().addWidget(self._bot_controls)
         self._bot_controls.state_changed.connect(self._on_bot_state_changed)
+        self._bot_controls.cycle_completed.connect(
+            self._activity_log.append_cycle_result
+        )
 
         # Status-Bar (permanent am unteren Rand)
         self._trading_status = TradingStatusBar()
@@ -594,6 +605,10 @@ class MainWindow(QMainWindow):
     @property
     def bot_controls(self) -> BotControlsWidget:
         return self._bot_controls
+
+    @property
+    def activity_log(self) -> ActivityLogWidget:
+        return self._activity_log
 
     @property
     def sidebar(self) -> NavigationSidebar:
