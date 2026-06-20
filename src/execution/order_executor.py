@@ -84,6 +84,10 @@ class OrderExecutor:
         # Live-Trading: Ticket -> Journal-Trade-ID fuer spaeteres Close
         self._journal_ticket_map: dict[int, int] = {}
 
+        # GUI-Callbacks fuer sofortige Order-Updates (kein Qt-Import benoetigt)
+        self._on_open_cb:  Optional[Callable[[dict], None]] = None
+        self._on_close_cb: Optional[Callable[[dict], None]] = None
+
         logger.info(
             "OrderExecutor | live={live} | trailing_min={tmin}p step={tstep}p",
             live=self._live,
@@ -92,6 +96,20 @@ class OrderExecutor:
         )
 
     # ── Oeffentliche Methoden ─────────────────────────────────────────────────
+
+    def set_order_callbacks(
+        self,
+        on_open:  Optional[Callable[[dict], None]] = None,
+        on_close: Optional[Callable[[dict], None]] = None,
+    ) -> None:
+        """
+        Setzt Callbacks die nach open_position() bzw. close_position() aufgerufen werden.
+
+        Ermoeglicht GUI-seitige Sofort-Updates ohne Qt-Abhaengigkeit im Executor.
+        Beide Parameter koennen None sein um bestehende Callbacks zu entfernen.
+        """
+        self._on_open_cb  = on_open
+        self._on_close_cb = on_close
 
     def open_position(
         self,
@@ -268,7 +286,13 @@ class OrderExecutor:
                 "entry_time": now,
             })
             self._paper_positions[ticket]["journal_id"] = journal_id
-        return dict(position)
+        order_result = dict(position)
+        if self._on_open_cb is not None:
+            try:
+                self._on_open_cb(order_result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OrderExecutor: on_open_cb Fehler: {e}", e=exc)
+        return order_result
 
     def _close_paper(self, ticket: int) -> dict:
         pos = self._paper_positions.get(ticket)
@@ -292,7 +316,13 @@ class OrderExecutor:
             journal_id = pos.get("journal_id")
             if journal_id is not None:
                 self._trade_journal.log_trade_close(journal_id, {"exit_time": now})
-        return dict(pos)
+        close_result = dict(pos)
+        if self._on_close_cb is not None:
+            try:
+                self._on_close_cb(close_result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OrderExecutor: on_close_cb Fehler: {e}", e=exc)
+        return close_result
 
     def _update_trailing_paper(self, ticket: int, current_price: float) -> None:
         pos = self._paper_positions.get(ticket)
@@ -372,6 +402,11 @@ class OrderExecutor:
                 "entry_price": trade.get("open_price"),
             })
             self._journal_ticket_map[ticket] = journal_id
+        if self._on_open_cb is not None:
+            try:
+                self._on_open_cb(dict(trade))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OrderExecutor: on_open_cb Fehler: {e}", e=exc)
         return trade
 
     def _close_live(self, ticket: int) -> dict:
@@ -420,6 +455,11 @@ class OrderExecutor:
                 self._trade_journal.log_trade_close(
                     journal_id, {"exit_price": trade.get("close_price")}
                 )
+        if self._on_close_cb is not None:
+            try:
+                self._on_close_cb(dict(trade))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("OrderExecutor: on_close_cb Fehler: {e}", e=exc)
         return trade
 
     def _update_trailing_live(self, ticket: int, current_price: float) -> None:

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
@@ -487,3 +487,23 @@ class CockpitView(QWidget):
     @property
     def active_symbol(self) -> str:
         return self._active_sym
+
+    def connect_order_executor(self, relay) -> None:
+        """
+        Verbindet einen OrderEventRelay fuer sofortige Positions-Updates.
+
+        Aktualisiert die Positions-Tabelle unmittelbar bei jeder Order-Aktion
+        des Bots, ohne auf das naechste manuelle Refresh zu warten.
+        """
+        relay.order_opened.connect(self.on_order_opened)
+        relay.order_closed.connect(self.on_order_closed)
+
+    @Slot(dict)
+    def on_order_opened(self, order: dict) -> None:  # noqa: ARG002
+        """Aktualisiert die Positions-Tabelle nach einer neuen Bot-Order."""
+        self._refresh_positions()
+
+    @Slot(dict)
+    def on_order_closed(self, order: dict) -> None:  # noqa: ARG002
+        """Aktualisiert die Positions-Tabelle nach einer Bot-Schliessen."""
+        self._refresh_positions()

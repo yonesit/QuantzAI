@@ -26,6 +26,7 @@ from enum import Enum, auto
 from typing import Optional, Protocol, runtime_checkable
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
@@ -520,12 +521,62 @@ class _PositionsTable(QFrame):
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, pos.ticket)
                 if col == 4 and pos.current_pnl is not None:
                     color = _profit_color(pos.current_pnl)
-                    item.setForeground(
-                        __import__("PySide6.QtGui", fromlist=["QColor"]).QColor(color)
-                    )
+                    item.setForeground(QColor(color))
                 self._table.setItem(row, col, item)
+
+    def add_position(self, pos: dict) -> None:
+        """Fuegt eine Position sofort ein und hebt sie kurz visuell hervor."""
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+
+        open_price = pos.get("open_price") or 0.0
+        cells = [
+            pos.get("symbol", ""),
+            (pos.get("direction", "")).upper(),
+            f"{pos.get('lot_size', 0):.2f}",
+            f"{open_price:.5f}",
+            "–",
+        ]
+        for col, text in enumerate(cells):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if col == 0:
+                item.setData(Qt.ItemDataRole.UserRole, pos.get("ticket"))
+            self._table.setItem(row, col, item)
+
+        self._highlight_row(row)
+
+    def remove_position(self, ticket) -> None:
+        """Entfernt die Zeile mit dem angegebenen Ticket."""
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == ticket:
+                self._table.removeRow(row)
+                return
+
+    def _highlight_row(self, row: int) -> None:
+        highlight = QColor("#fef3c7")
+        for col in range(self._table.columnCount()):
+            item = self._table.item(row, col)
+            if item is not None:
+                item.setBackground(highlight)
+        QTimer.singleShot(2000, lambda r=row: self._clear_row_highlight(r))
+
+    def _clear_row_highlight(self, row: int) -> None:
+        try:
+            if row >= self._table.rowCount():
+                return
+            transparent = QColor("transparent")
+            for col in range(self._table.columnCount()):
+                item = self._table.item(row, col)
+                if item is not None:
+                    item.setBackground(transparent)
+        except RuntimeError:
+            pass  # Widget already deleted (e.g. during test teardown)
 
     @property
     def table(self) -> QTableWidget:
@@ -880,3 +931,23 @@ class DashboardView(QScrollArea):
     @property
     def last_snapshot(self) -> DashboardSnapshot:
         return self._last_snap
+
+    def connect_order_executor(self, relay) -> None:
+        """
+        Verbindet einen OrderEventRelay fuer sofortige Positions-Updates.
+
+        Die Positions-Tabelle aktualisiert sich jetzt bei jeder neuen
+        oder geschlossenen Position ohne auf das naechste Polling zu warten.
+        """
+        relay.order_opened.connect(self.on_order_opened)
+        relay.order_closed.connect(self.on_order_closed)
+
+    @Slot(dict)
+    def on_order_opened(self, order: dict) -> None:
+        """Wird unmittelbar nach open_position() aufgerufen."""
+        self._positions.add_position(order)
+
+    @Slot(dict)
+    def on_order_closed(self, order: dict) -> None:
+        """Wird unmittelbar nach close_position() aufgerufen."""
+        self._positions.remove_position(order.get("ticket"))
