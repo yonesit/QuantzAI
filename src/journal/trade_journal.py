@@ -352,6 +352,67 @@ class TradeJournal:
         ]
         return "\n".join(lines) + "\n"
 
+    def get_pnl_sequence(
+        self,
+        start_date: DateLike,
+        end_date: DateLike,
+        symbol: Optional[str] = None,
+    ) -> list[float]:
+        """
+        Gibt die geordnete PnL-Sequenz aller abgeschlossenen Trades im Zeitraum zurueck.
+
+        Nuetzlich fuer Sharpe-Ratio- und Max-Drawdown-Berechnungen.
+
+        Parameters
+        ----------
+        start_date : Startdatum/-zeit (inklusiv).
+        end_date   : Enddatum/-zeit (inklusiv).
+        symbol     : Optional – nur Trades fuer dieses Symbol.
+
+        Returns
+        -------
+        list[float]: PnL-Werte chronologisch sortiert.
+        """
+        start_iso = _to_iso_start(start_date)
+        end_iso   = _to_iso_end(end_date)
+
+        if symbol is not None:
+            sql = (
+                "SELECT pnl FROM trades "
+                "WHERE status = 'closed' AND pnl IS NOT NULL "
+                "AND entry_time >= ? AND entry_time <= ? AND symbol = ? "
+                "ORDER BY entry_time ASC"
+            )
+            params: tuple = (start_iso, end_iso, symbol)
+        else:
+            sql = (
+                "SELECT pnl FROM trades "
+                "WHERE status = 'closed' AND pnl IS NOT NULL "
+                "AND entry_time >= ? AND entry_time <= ? "
+                "ORDER BY entry_time ASC"
+            )
+            params = (start_iso, end_iso)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [float(row[0]) for row in rows]
+
+    def get_open_positions(self) -> list[dict]:
+        """
+        Gibt alle aktuell offenen Trades (status='open') zurueck.
+
+        Returns
+        -------
+        list[dict]: Offene Trades, juengste zuerst.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM trades WHERE status = 'open' ORDER BY entry_time DESC"
+            )
+            cols = [d[0] for d in cursor.description]
+            rows = cursor.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+
     # ── Interna ───────────────────────────────────────────────────────────────
 
     def _init_tables(self) -> None:
