@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +55,7 @@ from gui.views.settings_view import SettingsBackend, SettingsView
 from gui.dialogs.trade_confirmation_dialog import GuiConfirmationCallback
 from gui.widgets.activity_log_widget import ActivityLogWidget
 from gui.widgets.bot_controls_widget import BotControlsWidget, BotState
+from gui.widgets.console_widget import ConsoleWidget
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -557,11 +559,17 @@ class MainWindow(QMainWindow):
         self._views[Section.SETTINGS] = self._settings_view
         self._content.addWidget(self._settings_view)
 
-        # Content + Activity-Log als vertikaler Splitter
+        # Content + Tab-Widget (ActivityLog + Konsole) als vertikaler Splitter
         content_splitter = QSplitter(Qt.Orientation.Vertical)
         content_splitter.addWidget(self._content)
-        self._activity_log = ActivityLogWidget()
-        content_splitter.addWidget(self._activity_log)
+
+        bottom_tabs = QTabWidget()
+        bottom_tabs.setObjectName("bottom_tabs")
+        self._activity_log  = ActivityLogWidget()
+        self._console_widget = ConsoleWidget()
+        bottom_tabs.addTab(self._activity_log,  "Aktivitätslog")
+        bottom_tabs.addTab(self._console_widget, "Bot-Konsole")
+        content_splitter.addWidget(bottom_tabs)
         content_splitter.setSizes([600, 200])
         root.addWidget(content_splitter, stretch=1)
 
@@ -624,6 +632,10 @@ class MainWindow(QMainWindow):
     @property
     def confirmation_callback(self) -> GuiConfirmationCallback:
         return self._gui_confirmation_callback
+
+    @property
+    def console_widget(self) -> ConsoleWidget:
+        return self._console_widget
 
     @property
     def sidebar(self) -> NavigationSidebar:
