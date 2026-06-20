@@ -268,6 +268,10 @@ class BotControlsWidget(QWidget):
         """Aktueller Zustand des Bots."""
         return self._state
 
+    def start(self) -> None:
+        """Startet den Bot programmatisch (z. B. durch WatchdogService)."""
+        self._on_start()
+
     # ── Button-Slots ──────────────────────────────────────────────────────────
 
     @Slot()

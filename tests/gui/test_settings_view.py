@@ -99,7 +99,7 @@ class TestSettingsViewInit:
 
     def test_tab_count(self, qtbot):
         v = _make_view(qtbot)
-        assert v.tabs.count() == 6
+        assert v.tabs.count() == 7  # +1 Watchdog-Tab (Issue #61)
 
     def test_tab_risk_index(self, qtbot):
         v = _make_view(qtbot)

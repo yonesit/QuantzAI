@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -65,6 +66,7 @@ TAB_ACCOUNTS = 2
 TAB_SYMBOLS  = 3
 TAB_TELEGRAM = 4
 TAB_AUDIT    = 5
+TAB_WATCHDOG = 6
 
 _AVAILABLE_SYMBOLS: list[str] = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
@@ -88,6 +90,9 @@ _DEFAULT_SETTINGS: dict[str, Any] = {
     "symbols":                ["EURUSD", "GBPUSD"],
     "telegram_token":         "",
     "telegram_chat_id":       "",
+    "watchdog_enabled":       True,
+    "watchdog_max_restarts":  3,
+    "watchdog_window_seconds": 3600,
 }
 
 
@@ -202,12 +207,13 @@ class SettingsView(QWidget):
 
         self._tabs = QTabWidget()
         self._tabs.setObjectName("settings_tabs")
-        self._tabs.addTab(self._build_risk_tab(),     "Risiko")
-        self._tabs.addTab(self._build_mode_tab(),     "Modus")
-        self._tabs.addTab(self._build_accounts_tab(), "Konten")
-        self._tabs.addTab(self._build_symbols_tab(),  "Symbole")
-        self._tabs.addTab(self._build_telegram_tab(), "Telegram")
-        self._tabs.addTab(self._build_audit_tab(),    "Audit-Log")
+        self._tabs.addTab(self._build_risk_tab(),      "Risiko")
+        self._tabs.addTab(self._build_mode_tab(),      "Modus")
+        self._tabs.addTab(self._build_accounts_tab(),  "Konten")
+        self._tabs.addTab(self._build_symbols_tab(),   "Symbole")
+        self._tabs.addTab(self._build_telegram_tab(),  "Telegram")
+        self._tabs.addTab(self._build_audit_tab(),     "Audit-Log")
+        self._tabs.addTab(self._build_watchdog_tab(),  "Watchdog")
         root.addWidget(self._tabs, stretch=1)
 
         root.addWidget(self._build_save_bar())
@@ -442,6 +448,54 @@ class SettingsView(QWidget):
         layout.addStretch()
         return w
 
+    def _build_watchdog_tab(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("watchdog_tab")
+        form = QFormLayout(w)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setSpacing(12)
+
+        self._watchdog_enabled_cb = QCheckBox("Watchdog aktiviert")
+        self._watchdog_enabled_cb.setObjectName("watchdog_enabled_cb")
+        self._watchdog_enabled_cb.setChecked(True)
+        self._watchdog_enabled_cb.setToolTip(
+            "Wenn aktiviert, startet der Watchdog den Bot nach einem Crash automatisch neu."
+        )
+        self._watchdog_enabled_cb.stateChanged.connect(self._on_widget_changed)
+        form.addRow("Automatischer Neustart:", self._watchdog_enabled_cb)
+
+        self._watchdog_max_restarts_spin = QSpinBox()
+        self._watchdog_max_restarts_spin.setObjectName("watchdog_max_restarts_spin")
+        self._watchdog_max_restarts_spin.setRange(1, 10)
+        self._watchdog_max_restarts_spin.setValue(3)
+        self._watchdog_max_restarts_spin.setToolTip(
+            "Maximale Anzahl automatischer Neustarts pro Stunde (1 – 10)."
+        )
+        self._watchdog_max_restarts_spin.valueChanged.connect(self._on_widget_changed)
+        form.addRow("Max. Neustarts / Stunde:", self._watchdog_max_restarts_spin)
+
+        self._watchdog_window_combo = QComboBox()
+        self._watchdog_window_combo.setObjectName("watchdog_window_combo")
+        for label, secs in [
+            ("30 Minuten", 1800),
+            ("1 Stunde",   3600),
+            ("2 Stunden",  7200),
+        ]:
+            self._watchdog_window_combo.addItem(label, secs)
+        self._watchdog_window_combo.setCurrentIndex(1)  # 1 Stunde default
+        self._watchdog_window_combo.currentIndexChanged.connect(self._on_widget_changed)
+        form.addRow("Zeitfenster:", self._watchdog_window_combo)
+
+        info = QLabel(
+            "Beim Erreichen des Restart-Limits wird ein Telegram-Alert gesendet\n"
+            "und der Watchdog stoppt weitere automatische Neustarts."
+        )
+        info.setObjectName("watchdog_info_label")
+        info.setWordWrap(True)
+        form.addRow(info)
+
+        return w
+
     def _build_audit_tab(self) -> QWidget:
         w = QWidget()
         w.setObjectName("audit_tab")
@@ -537,6 +591,14 @@ class SettingsView(QWidget):
         self._token_input.setText(settings.get("telegram_token", ""))
         self._chat_id_input.setText(settings.get("telegram_chat_id", ""))
 
+        self._watchdog_enabled_cb.setChecked(settings.get("watchdog_enabled", True))
+        self._watchdog_max_restarts_spin.setValue(settings.get("watchdog_max_restarts", 3))
+        window_secs = settings.get("watchdog_window_seconds", 3600)
+        for i in range(self._watchdog_window_combo.count()):
+            if self._watchdog_window_combo.itemData(i) == window_secs:
+                self._watchdog_window_combo.setCurrentIndex(i)
+                break
+
         self._loading = False
 
     def _refresh_accounts(self) -> None:
@@ -559,16 +621,19 @@ class SettingsView(QWidget):
             if item.checkState() == Qt.CheckState.Checked:
                 checked_syms.append(item.text())
         return {
-            "max_risk_per_trade_pct": self._max_risk_spin.value(),
-            "max_daily_drawdown_pct": self._max_daily_dd_spin.value(),
-            "max_open_positions":     self._max_positions_spin.value(),
-            "max_lot_size":           self._max_lot_spin.value(),
-            "cooldown_after_loss_h":  self._cooldown_spin.value(),
-            "trading_mode":           self._mode_combo.currentData(),
-            "paper_mode":             self._paper_radio.isChecked(),
-            "symbols":                checked_syms,
-            "telegram_token":         self._token_input.text(),
-            "telegram_chat_id":       self._chat_id_input.text(),
+            "max_risk_per_trade_pct":  self._max_risk_spin.value(),
+            "max_daily_drawdown_pct":  self._max_daily_dd_spin.value(),
+            "max_open_positions":      self._max_positions_spin.value(),
+            "max_lot_size":            self._max_lot_spin.value(),
+            "cooldown_after_loss_h":   self._cooldown_spin.value(),
+            "trading_mode":            self._mode_combo.currentData(),
+            "paper_mode":              self._paper_radio.isChecked(),
+            "symbols":                 checked_syms,
+            "telegram_token":          self._token_input.text(),
+            "telegram_chat_id":        self._chat_id_input.text(),
+            "watchdog_enabled":        self._watchdog_enabled_cb.isChecked(),
+            "watchdog_max_restarts":   self._watchdog_max_restarts_spin.value(),
+            "watchdog_window_seconds": self._watchdog_window_combo.currentData(),
         }
 
     def _is_dirty(self) -> bool:

@@ -53,6 +53,7 @@ from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 from gui.views.settings_view import SettingsBackend, SettingsView
 from gui.dialogs.trade_confirmation_dialog import GuiConfirmationCallback
+from gui.services.watchdog_service import WatchdogService
 from gui.widgets.activity_log_widget import ActivityLogWidget
 from gui.widgets.bot_controls_widget import BotControlsWidget, BotState
 from gui.widgets.console_widget import ConsoleWidget
@@ -260,16 +261,19 @@ class TradingStatusBar(QWidget):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(16)
 
-        self._conn_dot    = QLabel()
-        self._conn_label  = QLabel()
-        self._account_lbl = QLabel()
-        self._mode_label  = QLabel()
-        self._bot_label   = QLabel()
+        self._conn_dot       = QLabel()
+        self._conn_label     = QLabel()
+        self._account_lbl    = QLabel()
+        self._mode_label     = QLabel()
+        self._bot_label      = QLabel()
+        self._watchdog_label = QLabel()
 
         for lbl in (self._conn_dot, self._conn_label,
-                    self._account_lbl, self._mode_label, self._bot_label):
+                    self._account_lbl, self._mode_label,
+                    self._bot_label, self._watchdog_label):
             lbl.setObjectName("status_label")
 
+        self._watchdog_label.setObjectName("watchdog_status_label")
         self._account_lbl.setVisible(False)
 
         layout.addWidget(self._conn_dot)
@@ -279,7 +283,11 @@ class TradingStatusBar(QWidget):
         layout.addWidget(self._mode_label)
         layout.addWidget(_vline())
         layout.addWidget(self._bot_label)
+        layout.addWidget(_vline())
+        layout.addWidget(self._watchdog_label)
         layout.addStretch()
+
+        self.set_watchdog_status("running")
 
     def _refresh(self) -> None:
         color_map = {
@@ -339,6 +347,18 @@ class TradingStatusBar(QWidget):
         bold = "font-weight: bold;" if "aktiv" in text.lower() else ""
         self._bot_label.setStyleSheet(f"color: {color}; {bold}")
 
+    def set_watchdog_status(self, status: str) -> None:
+        """Aktualisiert den Watchdog-Indikator in der Statusleiste."""
+        if status == "running":
+            self._watchdog_label.setText("Watchdog: aktiv")
+            self._watchdog_label.setStyleSheet("color: #22c55e;")
+        elif status == "disabled":
+            self._watchdog_label.setText("Watchdog: aus")
+            self._watchdog_label.setStyleSheet("color: #6b7280;")
+        elif status == "limit_reached":
+            self._watchdog_label.setText("Watchdog: Limit!")
+            self._watchdog_label.setStyleSheet("color: #ef4444; font-weight: bold;")
+
     # ── Getter fuer Tests ─────────────────────────────────────────────────────
 
     @property
@@ -372,6 +392,10 @@ class TradingStatusBar(QWidget):
     @property
     def account_info(self) -> Optional[dict]:
         return self._account_info
+
+    @property
+    def watchdog_label(self) -> QLabel:
+        return self._watchdog_label
 
 
 def _vline() -> QFrame:
@@ -592,6 +616,10 @@ class MainWindow(QMainWindow):
                 parent_widget=self
             )
 
+        # Watchdog: ueberwacht Bot-Crashes und startet automatisch neu
+        self._watchdog_service = WatchdogService(self._bot_controls)
+        self._settings_view.settings_saved.connect(self._on_settings_saved)
+
         # Status-Bar (permanent am unteren Rand)
         self._trading_status = TradingStatusBar()
         status_bar = QStatusBar()
@@ -599,9 +627,20 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self._trading_status, 1)
         self.setStatusBar(status_bar)
 
+        self._watchdog_service.status_changed.connect(
+            self._trading_status.set_watchdog_status
+        )
+
     @Slot(Section)
     def _on_section_changed(self, section: Section) -> None:
         self._content.setCurrentWidget(self._views[section])
+
+    @Slot(dict)
+    def _on_settings_saved(self, settings: dict) -> None:
+        if settings.get("watchdog_enabled", True):
+            self._watchdog_service.enable()
+        else:
+            self._watchdog_service.disable()
 
     @Slot(object)
     def _on_bot_state_changed(self, state: BotState) -> None:
@@ -616,6 +655,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Saubere Thread-Beendigung beim Schliessen des Hauptfensters."""
+        self._watchdog_service.shutdown()
         self._bot_controls.cleanup()
         super().closeEvent(event)
 
@@ -636,6 +676,10 @@ class MainWindow(QMainWindow):
     @property
     def console_widget(self) -> ConsoleWidget:
         return self._console_widget
+
+    @property
+    def watchdog_service(self) -> WatchdogService:
+        return self._watchdog_service
 
     @property
     def sidebar(self) -> NavigationSidebar:
