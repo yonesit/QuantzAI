@@ -50,6 +50,7 @@ from gui.views.dashboard_view import DashboardBackend, DashboardSnapshot, Dashbo
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
 from gui.views.settings_view import SettingsBackend, SettingsView
+from gui.widgets.bot_controls_widget import BotControlsWidget, BotState
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -327,6 +328,12 @@ class TradingStatusBar(QWidget):
         self._paused = paused
         self._refresh()
 
+    def update_bot_indicator(self, text: str, color: str) -> None:
+        """Setzt Bot-Label und Farbe direkt (wird von BotControlsWidget benutzt)."""
+        self._bot_label.setText(text)
+        bold = "font-weight: bold;" if "aktiv" in text.lower() else ""
+        self._bot_label.setStyleSheet(f"color: {color}; {bold}")
+
     # ── Getter fuer Tests ─────────────────────────────────────────────────────
 
     @property
@@ -472,6 +479,7 @@ class MainWindow(QMainWindow):
         journal_backend:      Optional[JournalBackend]      = None,
         backtest_backend:     Optional[BacktestBackend]     = None,
         settings_backend:     Optional[SettingsBackend]     = None,
+        bot_controls_widget:  Optional[BotControlsWidget]  = None,
         parent:               Optional[QWidget]             = None,
     ) -> None:
         super().__init__(parent)
@@ -485,6 +493,7 @@ class MainWindow(QMainWindow):
         self._journal_backend     = journal_backend
         self._backtest_backend    = backtest_backend
         self._settings_backend    = settings_backend
+        self._bot_controls_widget = bot_controls_widget
         self._theme.on_theme_changed(self.setStyleSheet)
 
         self._build()
@@ -545,6 +554,14 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._content, stretch=1)
 
+        # Bot-Steuerung unten in die Sidebar einhaengen
+        if self._bot_controls_widget is not None:
+            self._bot_controls = self._bot_controls_widget
+        else:
+            self._bot_controls = BotControlsWidget()
+        self._sidebar.layout().addWidget(self._bot_controls)
+        self._bot_controls.state_changed.connect(self._on_bot_state_changed)
+
         # Status-Bar (permanent am unteren Rand)
         self._trading_status = TradingStatusBar()
         status_bar = QStatusBar()
@@ -556,7 +573,27 @@ class MainWindow(QMainWindow):
     def _on_section_changed(self, section: Section) -> None:
         self._content.setCurrentWidget(self._views[section])
 
+    @Slot(object)
+    def _on_bot_state_changed(self, state: BotState) -> None:
+        _indicators = {
+            BotState.STOPPED:  ("⏹  Bot gestoppt", "#6b7280"),
+            BotState.RUNNING:  ("▶  Bot aktiv",     "#22c55e"),
+            BotState.PAUSED:   ("⏸  Bot pausiert",  "#f59e0b"),
+            BotState.STOPPING: ("■  Bot stoppt...", "#ef4444"),
+        }
+        text, color = _indicators.get(state, ("?", "#6b7280"))
+        self._trading_status.update_bot_indicator(text, color)
+
+    def closeEvent(self, event) -> None:
+        """Saubere Thread-Beendigung beim Schliessen des Hauptfensters."""
+        self._bot_controls.cleanup()
+        super().closeEvent(event)
+
     # ── Oeffentliche API ──────────────────────────────────────────────────────
+
+    @property
+    def bot_controls(self) -> BotControlsWidget:
+        return self._bot_controls
 
     @property
     def sidebar(self) -> NavigationSidebar:
