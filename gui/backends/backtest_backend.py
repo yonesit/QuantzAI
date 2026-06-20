@@ -197,7 +197,7 @@ class BacktestGUIBackend:
             raise BacktestSetupError(
                 "Kein trainiertes Modell vorhanden.\n\n"
                 "Bitte zuerst das SignalModel trainieren:\n"
-                "  python scripts/train_model.py --symbol EURUSD --tf H1\n\n"
+                "  python scripts/train_model.py --symbol EURUSD\n\n"
                 f"Gesuchter Ordner:  {self._models_dir.resolve()}\n"
                 "Erwartetes Muster: signal_model_v*.joblib"
             )

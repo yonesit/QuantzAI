@@ -30,13 +30,16 @@ from src.models.label_builder import LabelBuilder
 from src.models.signal_model import SignalModel, build_save_path
 
 
-def _load_features(symbol: str) -> pd.DataFrame:
-    path = Path("data") / "features" / f"{symbol}_features.parquet"
-    if not path.exists():
+def _load_features(symbol: str, timeframe: str = "H1") -> pd.DataFrame:
+    features_dir = Path("data") / "features"
+    pattern = f"{symbol.upper()}_{timeframe.upper()}_*.parquet"
+    files = sorted(features_dir.glob(pattern), reverse=True)
+    if not files:
         raise FileNotFoundError(
-            f"Feature-Datei nicht gefunden: {path}\n"
-            "Fuehre zuerst 'python scripts/fetch_data.py' aus."
+            f"Feature-Datei nicht gefunden: {features_dir / pattern}\n"
+            f"Fuehre zuerst 'python scripts/fetch_data.py --symbol {symbol} --tf {timeframe}' aus."
         )
+    path = files[0]
     df = pd.read_parquet(path)
     logger.info("Features geladen: {path} | {n} Zeilen", path=path, n=len(df))
     return df
@@ -52,6 +55,7 @@ def _build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="QuantzAI SignalModel Training")
     parser.add_argument("--symbol", required=True, help="Handelssymbol, z.B. EURUSD")
+    parser.add_argument("--tf", default="H1", help="Timeframe, z.B. H1, M15, D1 (Standard: H1)")
     parser.add_argument("--version", type=int, default=1, help="Modellversion (Standard: 1)")
     parser.add_argument(
         "--confidence-threshold",
@@ -67,10 +71,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    logger.info("=== QuantzAI SignalModel Training | Symbol: {sym} ===", sym=args.symbol)
+    logger.info("=== QuantzAI SignalModel Training | Symbol: {sym} TF: {tf} ===", sym=args.symbol, tf=args.tf)
 
     # 1. Features laden
-    df = _load_features(args.symbol)
+    df = _load_features(args.symbol, args.tf)
 
     # 2. Labels erzeugen
     label_builder = LabelBuilder()
