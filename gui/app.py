@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from gui.design.theme import ThemeManager, ThemeMode, get_theme_manager
 from gui.views.backtest_view import BacktestBackend, BacktestView
 from gui.views.cockpit_view import CockpitBackend, CockpitView
+from gui.backends.backtest_backend import BacktestGUIBackend
 from gui.views.dashboard_view import DashboardBackend, DashboardSnapshot, DashboardView
 from gui.views.journal_view import JournalBackend, JournalView
 from gui.views.risk_center_view import RiskCenterBackend, RiskCenterView
@@ -752,7 +753,9 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 def main() -> int:
     """Haupteinstiegspunkt fuer die Desktop-Anwendung."""
     app = create_app()
-    window = MainWindow()
+    # Backtest-Backend einhaengen (kein externes Netzwerk noetig)
+    backtest_backend = BacktestGUIBackend()
+    window = MainWindow(backtest_backend=backtest_backend)
     window.show()
     connector = _try_connect_mt5(window.trading_status_bar)
     if connector is not None:
