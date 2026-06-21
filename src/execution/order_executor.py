@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
 from src.data.mt5_connector import _load_mt5
+from src.execution.execution_tracker import ExecutionTracker
 
 
 class OrderError(Exception):
@@ -59,6 +60,7 @@ class OrderExecutor:
         pip_size: float = 0.0001,
         audit_log=None,
         trade_journal=None,
+        execution_tracker: Optional[ExecutionTracker] = None,
     ) -> None:
         if live_trading_enabled:
             confirm = os.environ.get("CONFIRM_LIVE", "")
@@ -77,6 +79,7 @@ class OrderExecutor:
         self._pip_size = pip_size
         self._audit_log = audit_log
         self._trade_journal = trade_journal
+        self._execution_tracker = execution_tracker
 
         # Paper-Trading: In-Memory-Positionen {ticket -> position_dict}
         self._paper_positions: dict[int, dict] = {}
@@ -213,6 +216,105 @@ class OrderExecutor:
             ]
         return self._get_live_positions()
 
+    def place_limit_order(
+        self,
+        symbol:      str,
+        direction:   str,
+        lot_size:    float,
+        sl_price:    float,
+        tp_price:    float,
+        limit_price: float,
+        timeout_s:   Optional[float] = None,
+    ) -> dict:
+        """
+        Platziert eine Limit-Order (kein sofortiger Marktauftrag).
+
+        Parameters
+        ----------
+        symbol      : Handelssymbol.
+        direction   : "buy" oder "sell".
+        lot_size    : Lot-Groesse.
+        sl_price    : Stop-Loss-Preis.
+        tp_price    : Take-Profit-Preis.
+        limit_price : Gewuenschter Ausfuehrungspreis (Limit-Preis).
+        timeout_s   : Optionale Verfallszeit in Sekunden ab jetzt.
+                      Laeuft die Frist ab ohne Ausfuehrung, wird die Order
+                      von check_and_expire_limit_orders() storniert.
+
+        Returns
+        -------
+        dict mit ticket, status='pending_limit' und allen Order-Parametern.
+        """
+        direction = direction.lower()
+        if direction not in ("buy", "sell"):
+            raise ValueError(f"direction muss 'buy' oder 'sell' sein, nicht '{direction}'.")
+        if lot_size <= 0:
+            raise ValueError("lot_size muss positiv sein.")
+
+        if not self._live:
+            return self._place_paper_limit(
+                symbol, direction, lot_size, sl_price, tp_price, limit_price, timeout_s
+            )
+        return self._place_live_limit(
+            symbol, direction, lot_size, sl_price, tp_price, limit_price, timeout_s
+        )
+
+    def cancel_limit_order(self, ticket: int) -> dict:
+        """
+        Storniert eine ausstehende Limit-Order.
+
+        Returns
+        -------
+        dict mit ticket und status='cancelled'.
+
+        Raises
+        ------
+        OrderError wenn die Order nicht gefunden oder bereits ausgefuehrt/storniert.
+        """
+        if not self._live:
+            return self._cancel_paper_limit(ticket)
+        return self._cancel_live_limit(ticket)
+
+    def check_and_expire_limit_orders(
+        self,
+        current_time: Optional[datetime] = None,
+    ) -> list[int]:
+        """
+        Storniert Limit-Orders deren Timeout abgelaufen ist.
+
+        Parameters
+        ----------
+        current_time : Optionaler Zeitstempel (Standard: jetzt UTC).
+                       Injectable fuer Tests.
+
+        Returns
+        -------
+        list[int] mit den stornierten Tickets.
+        """
+        now = current_time or datetime.now(timezone.utc)
+        cancelled: list[int] = []
+
+        if not self._live:
+            for ticket, pos in list(self._paper_positions.items()):
+                if pos.get("status") != "pending_limit":
+                    continue
+                deadline = pos.get("timeout_deadline")
+                if deadline is None:
+                    continue
+                if isinstance(deadline, str):
+                    deadline = datetime.fromisoformat(deadline)
+                if now >= deadline:
+                    self._cancel_paper_limit(ticket)
+                    cancelled.append(ticket)
+                    logger.info(
+                        "[PAPER] Limit-Order {t} storniert (Timeout)", t=ticket
+                    )
+        else:
+            # Live: Check pending orders via MT5
+            cancelled = self._expire_live_limit_orders(now)
+
+        return cancelled
+
     # ── Reconciliation-Schnittstelle ──────────────────────────────────────────
 
     def reconcile_add_position(self, ticket: int, pos: dict) -> None:
@@ -343,15 +445,78 @@ class OrderExecutor:
                 "[PAPER] trailing_stop | ticket={t} | kein Update noetig", t=ticket
             )
 
+    def _place_paper_limit(
+        self,
+        symbol:      str,
+        direction:   str,
+        lot_size:    float,
+        sl_price:    float,
+        tp_price:    float,
+        limit_price: float,
+        timeout_s:   Optional[float],
+    ) -> dict:
+        ticket = self._next_ticket
+        self._next_ticket += 1
+        now = datetime.now(timezone.utc)
+
+        deadline_iso: Optional[str] = None
+        if timeout_s is not None:
+            deadline_iso = (now + timedelta(seconds=timeout_s)).isoformat()
+
+        position: dict[str, Any] = {
+            "ticket":           ticket,
+            "symbol":           symbol,
+            "direction":        direction,
+            "lot_size":         lot_size,
+            "sl_price":         sl_price,
+            "tp_price":         tp_price,
+            "limit_price":      limit_price,
+            "open_price":       None,
+            "open_time":        now.isoformat(),
+            "close_price":      None,
+            "close_time":       None,
+            "timeout_deadline": deadline_iso,
+            "status":           "pending_limit",
+        }
+        self._paper_positions[ticket] = position
+        self._write_paper_trades()
+
+        logger.info(
+            "[PAPER] place_limit_order | ticket={t} {sym} {dir} {lot} lots "
+            "@ limit={lp} SL={sl} TP={tp}",
+            t=ticket, sym=symbol, dir=direction, lot=lot_size,
+            lp=limit_price, sl=sl_price, tp=tp_price,
+        )
+        return dict(position)
+
+    def _cancel_paper_limit(self, ticket: int) -> dict:
+        pos = self._paper_positions.get(ticket)
+        if pos is None:
+            raise OrderError(
+                f"Paper-Limit-Order {ticket} nicht gefunden. "
+                f"Verfuegbare Tickets: {list(self._paper_positions.keys())}"
+            )
+        if pos["status"] != "pending_limit":
+            raise OrderError(
+                f"Paper-Order {ticket} hat Status '{pos['status']}', "
+                f"nicht 'pending_limit'. Stornierung nicht moeglich."
+            )
+        pos["status"] = "cancelled"
+        pos["close_time"] = datetime.now(timezone.utc).isoformat()
+        self._write_paper_trades()
+        logger.info("[PAPER] cancel_limit_order | ticket={t}", t=ticket)
+        return dict(pos)
+
     # ── Live-Trading ──────────────────────────────────────────────────────────
 
     def _open_live(
         self,
-        symbol: str,
+        symbol:    str,
         direction: str,
-        lot_size: float,
-        sl_price: float,
-        tp_price: float,
+        lot_size:  float,
+        sl_price:  float,
+        tp_price:  float,
+        expected_price: Optional[float] = None,
     ) -> dict:
         if not self._connector.is_connected:
             raise OrderError("MT5Connector ist nicht verbunden.")
@@ -379,27 +544,69 @@ class OrderExecutor:
                 f"retcode={retcode} | {comment}"
             )
 
-        ticket = result.order
+        ticket      = result.order
+        actual_price = getattr(result, "price", None)
+        filled_volume = getattr(result, "volume", lot_size)
+
+        # Partial-Fill-Erkennung (IOC: verbleibende Menge wird storniert)
+        if filled_volume is not None and filled_volume < lot_size:
+            logger.warning(
+                "[LIVE] Partial-Fill | ticket={t} {sym} {dir} "
+                "angefordert={req} ausgefuehrt={fill}",
+                t=ticket, sym=symbol, dir=direction,
+                req=lot_size, fill=filled_volume,
+            )
+
         trade = {
-            "ticket":     ticket,
-            "symbol":     symbol,
-            "direction":  direction,
-            "lot_size":   lot_size,
-            "sl_price":   sl_price,
-            "tp_price":   tp_price,
-            "open_price": getattr(result, "price", None),
-            "status":     "open",
+            "ticket":         ticket,
+            "symbol":         symbol,
+            "direction":      direction,
+            "lot_size":       filled_volume if filled_volume is not None else lot_size,
+            "requested_lots": lot_size,
+            "sl_price":       sl_price,
+            "tp_price":       tp_price,
+            "open_price":     actual_price,
+            "partial_fill":   filled_volume is not None and filled_volume < lot_size,
+            "status":         "open",
         }
         logger.info(
             "[LIVE] open_position | ticket={t} {sym} {dir} {lot} lots",
-            t=ticket, sym=symbol, dir=direction, lot=lot_size,
+            t=ticket, sym=symbol, dir=direction, lot=filled_volume,
         )
+
+        # Slippage erfassen
+        if self._execution_tracker is not None and actual_price is not None:
+            ref_price = expected_price if expected_price is not None else actual_price
+            self._execution_tracker.record_slippage(
+                ticket=ticket,
+                symbol=symbol,
+                direction=direction,
+                expected_price=ref_price,
+                actual_price=actual_price,
+            )
+            # Gebuehren aus Connector-Symbol-Info ableiten (Spread + Commission)
+            try:
+                info = self._connector.get_symbol_info(symbol)
+                if info:
+                    spread_pts  = info.get("spread", 0) * self._pip_size
+                    commission  = abs(info.get("commission", 0.0))
+                    swap        = info.get("swap_long" if direction == "buy" else "swap_short", 0.0)
+                    self._execution_tracker.record_fees(
+                        ticket=ticket,
+                        symbol=symbol,
+                        spread=spread_pts,
+                        commission=commission,
+                        swap=float(swap) if swap is not None else 0.0,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("ExecutionTracker: Gebuehren-Abruf fehlgeschlagen: {e}", e=exc)
+
         if self._trade_journal is not None:
             journal_id = self._trade_journal.log_trade_open({
                 "symbol":      symbol,
                 "direction":   direction,
-                "lot_size":    lot_size,
-                "entry_price": trade.get("open_price"),
+                "lot_size":    trade["lot_size"],
+                "entry_price": actual_price,
             })
             self._journal_ticket_map[ticket] = journal_id
         if self._on_open_cb is not None:
@@ -408,6 +615,99 @@ class OrderExecutor:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("OrderExecutor: on_open_cb Fehler: {e}", e=exc)
         return trade
+
+    def _place_live_limit(
+        self,
+        symbol:      str,
+        direction:   str,
+        lot_size:    float,
+        sl_price:    float,
+        tp_price:    float,
+        limit_price: float,
+        timeout_s:   Optional[float],
+    ) -> dict:
+        if not self._connector.is_connected:
+            raise OrderError("MT5Connector ist nicht verbunden.")
+
+        mt5 = _load_mt5()
+        order_type = (
+            mt5.ORDER_TYPE_BUY_LIMIT if direction == "buy"
+            else mt5.ORDER_TYPE_SELL_LIMIT
+        )
+
+        expiration = 0
+        if timeout_s is not None:
+            exp_dt = datetime.now(timezone.utc) + timedelta(seconds=timeout_s)
+            expiration = int(exp_dt.timestamp())
+
+        request: dict[str, Any] = {
+            "action":   mt5.TRADE_ACTION_PENDING,
+            "symbol":   symbol,
+            "volume":   lot_size,
+            "type":     order_type,
+            "price":    limit_price,
+            "sl":       sl_price,
+            "tp":       tp_price,
+            "comment":  "QuantzAI limit",
+        }
+        if expiration:
+            request["expiration"] = expiration
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            retcode = result.retcode if result else "None"
+            comment = result.comment if result else "kein Ergebnis von MT5"
+            raise OrderError(
+                f"MT5 place_limit_order abgelehnt | symbol={symbol} dir={direction} "
+                f"retcode={retcode} | {comment}"
+            )
+
+        ticket = result.order
+        logger.info(
+            "[LIVE] place_limit_order | ticket={t} {sym} {dir} {lot} lots @ {lp}",
+            t=ticket, sym=symbol, dir=direction, lot=lot_size, lp=limit_price,
+        )
+        return {
+            "ticket":      ticket,
+            "symbol":      symbol,
+            "direction":   direction,
+            "lot_size":    lot_size,
+            "sl_price":    sl_price,
+            "tp_price":    tp_price,
+            "limit_price": limit_price,
+            "status":      "pending_limit",
+        }
+
+    def _cancel_live_limit(self, ticket: int) -> dict:
+        if not self._connector.is_connected:
+            raise OrderError("MT5Connector ist nicht verbunden.")
+
+        mt5 = _load_mt5()
+        orders = mt5.orders_get(ticket=ticket)
+        if not orders:
+            raise OrderError(f"MT5-Pending-Order {ticket} nicht gefunden.")
+
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order":  ticket,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            retcode = result.retcode if result else "None"
+            comment = result.comment if result else "kein Ergebnis"
+            raise OrderError(
+                f"MT5 cancel_limit_order abgelehnt | ticket={ticket} "
+                f"retcode={retcode} | {comment}"
+            )
+
+        logger.info("[LIVE] cancel_limit_order | ticket={t}", t=ticket)
+        return {"ticket": ticket, "status": "cancelled"}
+
+    def _expire_live_limit_orders(self, now: datetime) -> list[int]:
+        """Storniert live Pending-Orders die keinen MT5-Verfall haben und timed out sind."""
+        # In live trading we rely on MT5's own expiration mechanism.
+        # This method is a hook for manual-timeout tracking if needed.
+        return []
 
     def _close_live(self, ticket: int) -> dict:
         if not self._connector.is_connected:
