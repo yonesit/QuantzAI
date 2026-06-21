@@ -188,6 +188,103 @@ class AuditLog:
 
     # ── Interna ───────────────────────────────────────────────────────────────
 
+    def log_shadow_trade(self, trade_data: dict) -> None:
+        """
+        Speichert einen hypothetischen Shadow-Trade in der shadow_trades-Tabelle.
+
+        Parameters
+        ----------
+        trade_data : dict mit optionalen Feldern symbol, direction, lot_size,
+                     entry_price, sl_price, tp_price, confidence, label, ticket, signal.
+                     Weitere Felder landen in extra_json.
+        """
+        ts = _now_iso()
+        known = {
+            "symbol", "direction", "lot_size", "entry_price",
+            "sl_price", "tp_price", "confidence", "label", "ticket", "signal", "status",
+        }
+        extra = {k: v for k, v in trade_data.items() if k not in known}
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO shadow_trades
+                    (ts, symbol, direction, lot_size, entry_price,
+                     sl_price, tp_price, confidence, label, ticket, signal, extra_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    trade_data.get("symbol"),
+                    trade_data.get("direction"),
+                    trade_data.get("lot_size"),
+                    trade_data.get("entry_price"),
+                    trade_data.get("sl_price"),
+                    trade_data.get("tp_price"),
+                    trade_data.get("confidence"),
+                    trade_data.get("label", "shadow"),
+                    trade_data.get("ticket"),
+                    trade_data.get("signal"),
+                    json.dumps(extra, default=str) if extra else None,
+                ),
+            )
+            self._conn.commit()
+        logger.debug(
+            "AuditLog: Shadow-Trade gespeichert | {sym} {dir} label={l}",
+            sym=trade_data.get("symbol"),
+            dir=trade_data.get("direction"),
+            l=trade_data.get("label", "shadow"),
+        )
+
+    def query_shadow_trades(
+        self,
+        start_date: DateLike,
+        end_date: DateLike,
+        symbol: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Liest Shadow-Trades aus der shadow_trades-Tabelle.
+
+        Parameters
+        ----------
+        start_date : Startdatum/-Zeit (inklusiv).
+        end_date   : Enddatum/-Zeit (inklusiv).
+        symbol     : Optional – nur Trades dieses Symbols.
+        label      : Optional – nur Trades mit diesem Label.
+
+        Returns
+        -------
+        pd.DataFrame sortiert nach ts.
+        """
+        start_iso = _to_iso_start(start_date)
+        end_iso   = _to_iso_end(end_date)
+
+        conditions = ["ts >= ?", "ts <= ?"]
+        params: list = [start_iso, end_iso]
+
+        if symbol is not None:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if label is not None:
+            conditions.append("label = ?")
+            params.append(label)
+
+        sql = (
+            "SELECT * FROM shadow_trades WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY ts ASC"
+        )
+
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows   = cursor.fetchall()
+            cols   = [d[0] for d in cursor.description]
+
+        return pd.DataFrame(rows, columns=cols)
+
+    # ── Interna ───────────────────────────────────────────────────────────────
+
     def _init_tables(self) -> None:
         with self._lock:
             self._conn.executescript("""
@@ -217,6 +314,22 @@ class AuditLog:
                     event_type   TEXT NOT NULL,
                     reason       TEXT,
                     details_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS shadow_trades (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts          TEXT    NOT NULL,
+                    symbol      TEXT,
+                    direction   TEXT,
+                    lot_size    REAL,
+                    entry_price REAL,
+                    sl_price    REAL,
+                    tp_price    REAL,
+                    confidence  REAL,
+                    label       TEXT    DEFAULT 'shadow',
+                    ticket      INTEGER,
+                    signal      TEXT,
+                    extra_json  TEXT
                 );
             """)
             self._conn.commit()
