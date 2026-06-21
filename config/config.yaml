@@ -28,6 +28,7 @@ features:
   include_time_features: true
   warmup_candles: 200
   include_sentiment: false
+  sentiment_window_hours: 2.0  # Lookback-Fenster fuer GDELT-Sentiment (Stunden)
   mtf_adx_threshold: 25.0   # HTF-ADX muss >= Schwellwert (sonst h4/d1_trend=0)
   mtf_flip_lookback: 3       # Anzahl HTF-Bars fuer Vorzeichenwechsel-Erkennung
 

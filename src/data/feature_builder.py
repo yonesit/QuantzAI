@@ -331,18 +331,29 @@ class FeatureBuilder:
             )
 
         # ── Sentiment-Feature (optional, via features.include_sentiment: true) ─
+        # Historischer Modus (SentimentHistory): per-Row via get_sentiment_series()
+        #   → merge_asof backward, nur Nachrichten mit bucket_time < T (kein Look-ahead)
+        # Live-Modus (SentimentFeature): einmaliger build_feature()-Aufruf wie bisher
 
         if self.include_sentiment:
-            if self._sentiment_feature is not None:
+            sf = self._sentiment_feature
+            if sf is not None and hasattr(sf, "get_sentiment_series"):
                 try:
-                    sentiment_dict = self._sentiment_feature.build_feature(symbol)
-                    score = float(sentiment_dict.get("sentiment_score", 0.0))
+                    features["sentiment_score"] = sf.get_sentiment_series(
+                        features["timestamp"]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("SentimentHistory fehlgeschlagen: {exc}", exc=exc)
+                    features["sentiment_score"] = 0.0
+            elif sf is not None:
+                try:
+                    score = float(sf.build_feature(symbol).get("sentiment_score", 0.0))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("SentimentFeature fehlgeschlagen: {exc}", exc=exc)
                     score = 0.0
+                features["sentiment_score"] = score
             else:
-                score = 0.0
-            features["sentiment_score"] = score
+                features["sentiment_score"] = 0.0
 
         # â"€â"€ Warmup entfernen â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
