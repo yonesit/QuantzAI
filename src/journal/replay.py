@@ -46,6 +46,102 @@ _OHLCV_COLS = frozenset({"open", "high", "low", "close", "volume"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Geteilte Parquet-Lade-Infrastruktur (auch fuer PracticeSession)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_candles_for_range(
+    features_dir: str | Path,
+    symbol: str,
+    timeframe: str,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
+) -> list[dict]:
+    """
+    Laedt Candles fuer einen beliebigen Zeitraum aus Parquet-Dateien.
+
+    Wird von TradeReplay (ueber get_replay_data) und PracticeSession gemeinsam
+    genutzt – keine doppelte Chart-Rekonstruktions-Logik.
+
+    Parameters
+    ----------
+    features_dir : Verzeichnis mit Parquet-Dateien der DataPipeline.
+    symbol       : Symbol-Name (z. B. 'EURUSD').
+    timeframe    : Timeframe-Kuerzel (z. B. 'H1').
+    start_dt     : Untere Grenze (inklusiv). None = kein Filter.
+    end_dt       : Obere Grenze (inklusiv). None = kein Filter.
+
+    Returns
+    -------
+    list[dict] : Candles im GUI-Format ({time, open, high, low, close, volume}).
+
+    Raises
+    ------
+    ReplayDataNotFoundError : Keine passenden Parquet-Dateien oder leeres Ergebnis.
+    """
+    dir_ = Path(features_dir)
+    pattern = f"{symbol}_{timeframe}_*.parquet"
+    files = sorted(dir_.glob(pattern))
+
+    if not files:
+        raise ReplayDataNotFoundError(
+            f"Keine Parquet-Dateien fuer '{symbol}_{timeframe}' in '{dir_}'. "
+            "DataPipeline.run_batch() fuer diesen Zeitraum ausfuehren."
+        )
+
+    frames: list[pd.DataFrame] = []
+    for f in files:
+        try:
+            frames.append(pd.read_parquet(f))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Parquet lesen fehlgeschlagen | {f} | {e}", f=f, e=exc)
+
+    if not frames:
+        raise ReplayDataNotFoundError(
+            f"Alle Parquet-Dateien fuer '{symbol}_{timeframe}' "
+            "konnten nicht gelesen werden."
+        )
+
+    combined = pd.concat(frames)
+
+    # ── Zeitstempel normalisieren ────────────────────────────────────────────
+    if isinstance(combined.index, pd.DatetimeIndex):
+        if combined.index.tz is None:
+            combined.index = combined.index.tz_localize("UTC")
+    elif "timestamp" in combined.columns:
+        combined = combined.copy()
+        combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+        combined = combined.set_index("timestamp")
+    else:
+        raise ReplayDataNotFoundError(
+            "Parquet-Dateien haben kein verwertbares Zeitstempel-Format "
+            "(kein DatetimeIndex und keine 'timestamp'-Spalte)."
+        )
+
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+
+    if start_dt is not None:
+        combined = combined[combined.index >= start_dt]
+    if end_dt is not None:
+        combined = combined[combined.index <= end_dt]
+
+    if combined.empty:
+        raise ReplayDataNotFoundError(
+            f"Keine Daten fuer '{symbol}_{timeframe}' im angegebenen Zeitraum "
+            f"({start_dt} – {end_dt})."
+        )
+
+    ohlcv_cols = [c for c in ("open", "high", "low", "close", "volume") if c in combined.columns]
+    candles: list[dict] = []
+    for ts, row in combined.iterrows():
+        candle: dict = {"time": ts.isoformat()}
+        for col in ohlcv_cols:
+            v = row[col]
+            candle[col] = float(v) if pd.notna(v) else None
+        candles.append(candle)
+    return candles
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  Exceptions
 # ─────────────────────────────────────────────────────────────────────────────
 
