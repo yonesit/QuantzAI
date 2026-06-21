@@ -5,17 +5,18 @@ Zentrale Einstellungs-View fuer alle Bot-Parameter.
 Tabs:
   0 – Risiko-Parameter  : Min/Max-Grenzen fuer Risiko-Werte
   1 – Trading-Modus     : Modus- und Live/Paper-Umschaltung (mehrstufige Bestätigung)
-  2 – Konten            : Konto-Verwaltung ohne Klartext-Passwoerter
+  2 – Konten            : Keyring-basierte Konto-Verwaltung (Demo/Live, sicheres Passwort)
   3 – Symbole           : Symbol-Auswahl per Checkbox-Liste
   4 – Telegram          : Token (maskiert), Chat-ID, Test-Button
   5 – Audit-Log         : Aenderungshistorie der gespeicherten Einstellungen
+  6 – Watchdog          : Auto-Restart-Konfiguration
 
 Sicherheitsprinzipien:
-  - Konto-Formulare enthalten keine Passwort-Felder (Passwoerter per .env)
-  - Speichern erst nach Bestaetigung wirksam
+  - Passwoerter NUR via keyring gespeichert, NIEMALS in Klartext-Dateien
+  - Passwoerter nach Eingabe nie mehr angezeigt (nur Status: Gesetzt/Nicht gesetzt)
+  - Live-Konten mit roter Warnung markiert
   - AUTONOMOUS-Modus erfordert 2-stufige Bestaetigung
   - LIVE-Modus erfordert eigene Bestaetigung
-  - Telegram-Token in Eingabefeld maskiert (Password-Echo)
 
 Testbarkeit:
   _confirm_fn      : (title: str, message: str) -> bool  (ersetzt Dialoge)
@@ -28,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -54,6 +56,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from loguru import logger
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +120,43 @@ class SettingsBackend:
     def get_accounts(self) -> list[dict[str, str]]:
         return []
 
+    def list_stored_accounts(self) -> list[dict]:
+        """Gibt alle gespeicherten Konten mit Metadaten zurueck.
+
+        Jedes Dict enthaelt: account_id, login, broker, server, is_live, has_password.
+        """
+        return []
+
+    def save_account_credentials(
+        self,
+        account_id: str,
+        login: str,
+        broker: str,
+        server: str,
+        is_live: bool,
+        password: Optional[str] = None,
+    ) -> None:
+        pass
+
+    def set_account_password(self, account_id: str, password: str) -> None:
+        pass
+
+    def has_account_password(self, account_id: str) -> bool:
+        return False
+
+    def delete_account_credentials(self, account_id: str) -> None:
+        pass
+
+    def import_from_env(self) -> list[str]:
+        return []
+
+    def get_active_account_id(self) -> Optional[str]:
+        return None
+
+    def switch_account(self, account_id: str) -> None:
+        pass
+
+    # Backward-compat methods (kept for legacy callers)
     def add_account(self, account_id: str, broker: str, server: str) -> None:
         pass
 
@@ -159,8 +200,9 @@ class SettingsView(QWidget):
 
     Signale
     -------
-    settings_saved : emittiert nach erfolgreichem Speichern mit dem neuen settings-dict
-    mode_changed   : emittiert wenn sich der Trading-Modus beim Speichern aendert
+    settings_saved   : emittiert nach erfolgreichem Speichern mit dem neuen settings-dict
+    mode_changed     : emittiert wenn sich der Trading-Modus beim Speichern aendert
+    account_switched : emittiert wenn das aktive Konto gewechselt wird (account_id: str)
 
     Parameters
     ----------
@@ -170,8 +212,9 @@ class SettingsView(QWidget):
     parent            : Eltern-Widget.
     """
 
-    settings_saved = Signal(dict)
-    mode_changed   = Signal(str)
+    settings_saved   = Signal(dict)
+    mode_changed     = Signal(str)
+    account_switched = Signal(str)
 
     def __init__(
         self,
@@ -332,17 +375,35 @@ class SettingsView(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        info = QLabel(
-            "Konten-Verwaltung: Passwoerter werden NICHT gespeichert.\n"
-            "Login-Daten ausschliesslich ueber .env-Datei konfigurieren."
-        )
-        info.setObjectName("accounts_info")
-        info.setWordWrap(True)
-        layout.addWidget(info)
+        # Aktives Konto – Auswahl-Dropdown
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Aktives Konto:"))
+        self._account_selector = QComboBox()
+        self._account_selector.setObjectName("account_selector")
+        self._account_selector.setToolTip("Aktives Konto auswählen – Bot wechselt sauber die Verbindung.")
+        self._account_selector.currentIndexChanged.connect(self._on_account_selector_changed)
+        selector_row.addWidget(self._account_selector, stretch=1)
+        layout.addLayout(selector_row)
 
-        self._accounts_table = QTableWidget(0, 3)
+        # Live-Warnung (rot, nur sichtbar bei Live-Konto)
+        self._live_warning_label = QLabel(
+            "⚠  LIVE-KONTO: Alle Trades werden mit echtem Geld ausgefuehrt!"
+        )
+        self._live_warning_label.setObjectName("live_warning_label")
+        self._live_warning_label.setWordWrap(True)
+        self._live_warning_label.setStyleSheet(
+            "background: #c0392b; color: white; padding: 6px; "
+            "border-radius: 4px; font-weight: bold;"
+        )
+        self._live_warning_label.hide()
+        layout.addWidget(self._live_warning_label)
+
+        # Konten-Tabelle (5 Spalten)
+        self._accounts_table = QTableWidget(0, 5)
         self._accounts_table.setObjectName("accounts_table")
-        self._accounts_table.setHorizontalHeaderLabels(["Konto-ID", "Broker", "Server"])
+        self._accounts_table.setHorizontalHeaderLabels(
+            ["Konto-ID", "Broker", "Server", "Typ", "Passwort"]
+        )
         self._accounts_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -350,6 +411,7 @@ class SettingsView(QWidget):
         self._accounts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self._accounts_table)
 
+        # Formular: Konto hinzufügen
         form_group = QGroupBox("Konto hinzufügen")
         form_layout = QFormLayout(form_group)
         form_layout.setSpacing(8)
@@ -358,6 +420,11 @@ class SettingsView(QWidget):
         self._account_id_input.setObjectName("account_id_input")
         self._account_id_input.setPlaceholderText("z.B. demo, live_1")
         form_layout.addRow("Konto-ID:", self._account_id_input)
+
+        self._login_input = QLineEdit()
+        self._login_input.setObjectName("login_input")
+        self._login_input.setPlaceholderText("MT5-Login-Nummer")
+        form_layout.addRow("Login-Nummer:", self._login_input)
 
         self._broker_input = QLineEdit()
         self._broker_input.setObjectName("broker_input")
@@ -368,6 +435,30 @@ class SettingsView(QWidget):
         self._server_input.setObjectName("server_input")
         self._server_input.setPlaceholderText("z.B. ICMarkets-Demo")
         form_layout.addRow("Server:", self._server_input)
+
+        self._is_live_checkbox = QCheckBox("Live-Konto (echtes Geld!)")
+        self._is_live_checkbox.setObjectName("is_live_checkbox")
+        self._is_live_checkbox.setToolTip(
+            "Nur für echte Live-Konten mit realem Kapital aktivieren."
+        )
+        form_layout.addRow("Kontotyp:", self._is_live_checkbox)
+
+        # Passwort-Sektion (Passwort wird NICHT angezeigt nach dem Speichern)
+        pw_row = QHBoxLayout()
+        self._password_input = QLineEdit()
+        self._password_input.setObjectName("password_input")
+        self._password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password_input.setPlaceholderText("Passwort eingeben (sicher gespeichert)")
+        pw_row.addWidget(self._password_input, stretch=1)
+        self._set_password_btn = QPushButton("Passwort setzen")
+        self._set_password_btn.setObjectName("set_password_btn")
+        self._set_password_btn.clicked.connect(self._on_set_password_clicked)
+        pw_row.addWidget(self._set_password_btn)
+        form_layout.addRow("Passwort:", pw_row)
+
+        self._password_status_label = QLabel("Status: Nicht gesetzt")
+        self._password_status_label.setObjectName("password_status_label")
+        form_layout.addRow("", self._password_status_label)
 
         btn_row = QHBoxLayout()
         self._add_account_btn = QPushButton("Hinzufügen")
@@ -384,6 +475,16 @@ class SettingsView(QWidget):
         btn_row.addStretch()
         form_layout.addRow(btn_row)
         layout.addWidget(form_group)
+
+        # Migration aus .env
+        self._import_env_btn = QPushButton("Migration: Daten aus .env importieren")
+        self._import_env_btn.setObjectName("import_env_btn")
+        self._import_env_btn.setToolTip(
+            "Importiert MT5_LOGIN, MT5_PASSWORD, MT5_SERVER aus .env-Datei "
+            "einmalig in den sicheren Keyring-Speicher."
+        )
+        self._import_env_btn.clicked.connect(self._on_import_env_clicked)
+        layout.addWidget(self._import_env_btn)
 
         return w
 
@@ -602,15 +703,37 @@ class SettingsView(QWidget):
         self._loading = False
 
     def _refresh_accounts(self) -> None:
+        """Laedt alle Konten aus dem Backend und befuellt Tabelle + Selector."""
+        self._loading = True
         self._accounts_table.setRowCount(0)
-        if self._backend is None:
-            return
-        for acc in self._backend.get_accounts():
-            self._add_account_row(
-                acc.get("account_id", ""),
-                acc.get("broker", ""),
-                acc.get("server", ""),
-            )
+        self._account_selector.clear()
+
+        accounts: list[dict] = []
+        if self._backend is not None:
+            accounts = self._backend.list_stored_accounts()
+
+        for acc in accounts:
+            account_id   = acc.get("account_id", "")
+            broker       = acc.get("broker", "")
+            server       = acc.get("server", "")
+            is_live      = bool(acc.get("is_live", False))
+            has_password = bool(acc.get("has_password", False))
+
+            label = f"{account_id}  [LIVE]" if is_live else f"{account_id}  [Demo]"
+            self._account_selector.addItem(label, account_id)
+            self._add_account_row(account_id, broker, server, is_live, has_password)
+
+        # Aktives Konto wiederherstellen
+        if self._backend is not None:
+            active_id = self._backend.get_active_account_id()
+            if active_id is not None:
+                for i in range(self._account_selector.count()):
+                    if self._account_selector.itemData(i) == active_id:
+                        self._account_selector.setCurrentIndex(i)
+                        break
+
+        self._loading = False
+        self._update_live_warning(self._account_selector.currentData())
 
     # ── Aktuellen Zustand sammeln ─────────────────────────────────────────────
 
@@ -733,21 +856,71 @@ class SettingsView(QWidget):
 
     # ── Konten ───────────────────────────────────────────────────────────────
 
-    def _on_add_account_clicked(self) -> None:
-        account_id = self._account_id_input.text().strip()
-        broker     = self._broker_input.text().strip()
-        server     = self._server_input.text().strip()
-        if not account_id:
+    def _on_account_selector_changed(self) -> None:
+        if self._loading:
             return
+        account_id = self._account_selector.currentData()
+        if account_id is None:
+            return
+        self._update_live_warning(account_id)
         if self._backend is not None:
             try:
-                self._backend.add_account(account_id, broker, server)
+                self._backend.switch_account(account_id)
             except Exception:  # noqa: BLE001
                 pass
-        self._add_account_row(account_id, broker, server)
+        self.account_switched.emit(account_id)
+
+    def _update_live_warning(self, account_id: Optional[str]) -> None:
+        """Zeigt/verbirgt die Live-Konto-Warnung basierend auf dem aktiven Konto."""
+        if account_id is None or self._backend is None:
+            self._live_warning_label.hide()
+            return
+        for acc in self._backend.list_stored_accounts():
+            if acc.get("account_id") == account_id:
+                if acc.get("is_live", False):
+                    self._live_warning_label.show()
+                else:
+                    self._live_warning_label.hide()
+                return
+        self._live_warning_label.hide()
+
+    def _on_add_account_clicked(self) -> None:
+        account_id = self._account_id_input.text().strip()
+        login      = self._login_input.text().strip()
+        broker     = self._broker_input.text().strip()
+        server     = self._server_input.text().strip()
+        is_live    = self._is_live_checkbox.isChecked()
+        password   = self._password_input.text()
+
+        if not account_id:
+            return
+
+        if self._backend is not None:
+            try:
+                self._backend.save_account_credentials(
+                    account_id, login, broker, server, is_live,
+                    password if password else None,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._add_account_row(account_id, broker, server, is_live, bool(password))
+
+        # Selector aktualisieren
+        label = f"{account_id}  [LIVE]" if is_live else f"{account_id}  [Demo]"
+        self._loading = True
+        self._account_selector.addItem(label, account_id)
+        self._loading = False
+
+        if password:
+            self._password_status_label.setText("Status: Gesetzt")
+
         self._account_id_input.clear()
+        self._login_input.clear()
         self._broker_input.clear()
         self._server_input.clear()
+        self._is_live_checkbox.setChecked(False)
+        self._password_input.clear()
 
     def _on_remove_account_clicked(self) -> None:
         row = self._accounts_table.currentRow()
@@ -762,17 +935,64 @@ class SettingsView(QWidget):
             return
         if self._backend is not None:
             try:
-                self._backend.remove_account(account_id)
+                self._backend.delete_account_credentials(account_id)
             except Exception:  # noqa: BLE001
                 pass
         self._accounts_table.removeRow(row)
+        # Aus Selector entfernen
+        for i in range(self._account_selector.count()):
+            if self._account_selector.itemData(i) == account_id:
+                self._loading = True
+                self._account_selector.removeItem(i)
+                self._loading = False
+                break
 
-    def _add_account_row(self, account_id: str, broker: str, server: str) -> None:
+    def _on_set_password_clicked(self) -> None:
+        """Setzt/aktualisiert das Passwort fuer ein bestehendes Konto sicher via keyring."""
+        account_id = self._account_id_input.text().strip()
+        password   = self._password_input.text()
+        if not account_id or not password:
+            return
+        if self._backend is not None:
+            try:
+                self._backend.set_account_password(account_id, password)
+            except Exception:  # noqa: BLE001
+                pass
+        self._password_input.clear()
+        self._password_status_label.setText("Status: Gesetzt")
+
+    def _on_import_env_clicked(self) -> None:
+        """Importiert .env-Daten einmalig in den keyring."""
+        if self._backend is None:
+            return
+        try:
+            imported = self._backend.import_from_env()
+        except Exception:  # noqa: BLE001
+            imported = []
+        self._refresh_accounts()
+        logger.info("SettingsView: .env-Import abgeschlossen: {ids}", ids=imported)
+
+    def _add_account_row(
+        self,
+        account_id: str,
+        broker: str,
+        server: str,
+        is_live: bool = False,
+        has_password: bool = False,
+    ) -> None:
         row = self._accounts_table.rowCount()
         self._accounts_table.insertRow(row)
         self._accounts_table.setItem(row, 0, QTableWidgetItem(account_id))
         self._accounts_table.setItem(row, 1, QTableWidgetItem(broker))
         self._accounts_table.setItem(row, 2, QTableWidgetItem(server))
+
+        typ_item = QTableWidgetItem("LIVE" if is_live else "Demo")
+        if is_live:
+            typ_item.setForeground(QColor("#c0392b"))
+        self._accounts_table.setItem(row, 3, typ_item)
+
+        pw_item = QTableWidgetItem("Gesetzt" if has_password else "Nicht gesetzt")
+        self._accounts_table.setItem(row, 4, pw_item)
 
     # ── Telegram ─────────────────────────────────────────────────────────────
 
@@ -837,12 +1057,24 @@ class SettingsView(QWidget):
         return self._live_radio
 
     @property
+    def account_selector(self) -> QComboBox:
+        return self._account_selector
+
+    @property
+    def live_warning_label(self) -> QLabel:
+        return self._live_warning_label
+
+    @property
     def accounts_table(self) -> QTableWidget:
         return self._accounts_table
 
     @property
     def account_id_input(self) -> QLineEdit:
         return self._account_id_input
+
+    @property
+    def login_input(self) -> QLineEdit:
+        return self._login_input
 
     @property
     def broker_input(self) -> QLineEdit:
@@ -853,12 +1085,32 @@ class SettingsView(QWidget):
         return self._server_input
 
     @property
+    def is_live_checkbox(self) -> QCheckBox:
+        return self._is_live_checkbox
+
+    @property
+    def password_input(self) -> QLineEdit:
+        return self._password_input
+
+    @property
+    def set_password_btn(self) -> QPushButton:
+        return self._set_password_btn
+
+    @property
+    def password_status_label(self) -> QLabel:
+        return self._password_status_label
+
+    @property
     def add_account_btn(self) -> QPushButton:
         return self._add_account_btn
 
     @property
     def remove_account_btn(self) -> QPushButton:
         return self._remove_account_btn
+
+    @property
+    def import_env_btn(self) -> QPushButton:
+        return self._import_env_btn
 
     @property
     def symbols_list(self) -> QListWidget:

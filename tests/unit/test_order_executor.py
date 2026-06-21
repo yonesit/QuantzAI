@@ -58,6 +58,7 @@ def _mt5_mock() -> MagicMock:
     ok_result.order    = 42
     ok_result.comment  = "Request completed"
     ok_result.price    = 1.10000
+    ok_result.volume   = 0.1    # vollstaendige Fuellung
     mt5.order_send.return_value = ok_result
 
     # positions_get gibt eine offene Buy-Position zurueck

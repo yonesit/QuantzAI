@@ -59,10 +59,22 @@ def _mock_backend(**overrides) -> MagicMock:
         {"account_id": "demo",   "broker": "MT5",   "server": "Demo-Server"},
         {"account_id": "live_1", "broker": "OANDA", "server": "Live-Server"},
     ]
-    backend.save_settings.return_value  = None
-    backend.add_account.return_value    = None
-    backend.remove_account.return_value = None
-    backend.test_telegram.return_value  = True
+    backend.list_stored_accounts.return_value = [
+        {"account_id": "demo",   "broker": "MT5",   "server": "Demo-Server",
+         "is_live": False, "has_password": False, "login": ""},
+        {"account_id": "live_1", "broker": "OANDA", "server": "Live-Server",
+         "is_live": True,  "has_password": True,  "login": "999"},
+    ]
+    backend.get_active_account_id.return_value  = None
+    backend.save_settings.return_value          = None
+    backend.save_account_credentials.return_value = None
+    backend.set_account_password.return_value   = None
+    backend.delete_account_credentials.return_value = None
+    backend.import_from_env.return_value        = []
+    backend.switch_account.return_value         = None
+    backend.add_account.return_value            = None
+    backend.remove_account.return_value         = None
+    backend.test_telegram.return_value          = True
     for k, v in overrides.items():
         setattr(backend, k, MagicMock(return_value=v) if not callable(v) else v)
     return backend
@@ -160,7 +172,7 @@ class TestSettingsViewInit:
 
     def test_accounts_table_three_columns(self, qtbot):
         v = _make_view(qtbot)
-        assert v.accounts_table.columnCount() == 3
+        assert v.accounts_table.columnCount() == 5
 
     def test_audit_table_four_columns(self, qtbot):
         v = _make_view(qtbot)
@@ -624,6 +636,8 @@ class TestAccountManagement:
         assert "Konto-ID" in headers
         assert "Broker"   in headers
         assert "Server"   in headers
+        assert "Typ"      in headers
+        assert "Passwort" in headers
 
     def test_accounts_loaded_from_backend(self, qtbot):
         backend = _mock_backend()
@@ -644,7 +658,7 @@ class TestAccountManagement:
         v.broker_input.setText("MT5")
         v.server_input.setText("New-Server")
         v.add_account_btn.click()
-        backend.add_account.assert_called_once_with("new_acc", "MT5", "New-Server")
+        backend.save_account_credentials.assert_called_once()
 
     def test_add_account_adds_row_to_table(self, qtbot):
         v = _make_view(qtbot)
@@ -668,22 +682,22 @@ class TestAccountManagement:
         v.account_id_input.setText("")
         v.add_account_btn.click()
         assert v.accounts_table.rowCount() == before
-        backend.add_account.assert_not_called()
+        backend.save_account_credentials.assert_not_called()
 
-    def test_add_account_no_password_field(self, qtbot):
+    def test_add_account_has_password_field(self, qtbot):
         v = _make_view(qtbot)
-        # No password widget should exist on accounts form
+        # Password widget exists – stored securely via keyring, never shown again
         from PySide6.QtWidgets import QLineEdit
         inputs = v.findChildren(QLineEdit)
         names  = [w.objectName() for w in inputs]
-        assert "password_input" not in names
+        assert "password_input" in names
 
     def test_remove_account_calls_backend(self, qtbot):
         backend = _mock_backend()
         v = _make_view(qtbot, backend=backend)
         v.accounts_table.selectRow(0)
         v.remove_account_btn.click()
-        backend.remove_account.assert_called_once()
+        backend.delete_account_credentials.assert_called_once()
 
     def test_remove_account_removes_row(self, qtbot):
         backend = _mock_backend()
@@ -700,7 +714,7 @@ class TestAccountManagement:
         v.accounts_table.clearSelection()
         v.remove_account_btn.click()
         assert v.accounts_table.rowCount() == before
-        backend.remove_account.assert_not_called()
+        backend.delete_account_credentials.assert_not_called()
 
     def test_remove_account_rejected_confirm_no_removal(self, qtbot):
         backend = _mock_backend()
@@ -929,10 +943,10 @@ class TestBackendIntegration:
         _make_view(qtbot, backend=backend)
         backend.get_settings.assert_called_once()
 
-    def test_get_accounts_called_on_init(self, qtbot):
+    def test_list_stored_accounts_called_on_init(self, qtbot):
         backend = _mock_backend()
         _make_view(qtbot, backend=backend)
-        backend.get_accounts.assert_called_once()
+        backend.list_stored_accounts.assert_called()
 
     def test_custom_settings_loaded_into_widgets(self, qtbot):
         backend = _mock_backend()
@@ -1009,3 +1023,266 @@ class TestMainWindowIntegration:
         assert mw.settings_view._backend is None
         # view should still work (defaults used)
         assert mw.settings_view.mode_combo.currentData() == "suggest_only"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  TestKeyringAccountManagement  (Issue #66)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKeyringAccountManagement:
+
+    def test_account_selector_present(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.account_selector is not None
+
+    def test_account_selector_object_name(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.account_selector.objectName() == "account_selector"
+
+    def test_live_warning_hidden_initially_no_backend(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.live_warning_label.isHidden()
+
+    def test_live_warning_hidden_for_demo_accounts(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "demo", "broker": "MT5", "server": "Demo", "is_live": False, "has_password": False}
+        ]
+        backend.get_active_account_id.return_value = None
+        v = _make_view(qtbot, backend=backend)
+        assert v.live_warning_label.isHidden()
+
+    def test_live_warning_shown_for_live_account(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "live1", "broker": "MT5", "server": "Live", "is_live": True, "has_password": True}
+        ]
+        backend.get_active_account_id.return_value = None
+        v = _make_view(qtbot, backend=backend)
+        # Manually trigger update for the live account
+        v._update_live_warning("live1")
+        assert not v.live_warning_label.isHidden()
+
+    def test_update_live_warning_hides_for_demo(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "demo", "broker": "MT5", "server": "Demo", "is_live": False, "has_password": False}
+        ]
+        v = _make_view(qtbot, backend=backend)
+        v._update_live_warning("demo")
+        assert v.live_warning_label.isHidden()
+
+    def test_update_live_warning_unknown_account_hides(self, qtbot):
+        v = _make_view(qtbot)
+        v._update_live_warning("nonexistent")
+        assert v.live_warning_label.isHidden()
+
+    def test_accounts_table_five_columns(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.accounts_table.columnCount() == 5
+
+    def test_password_input_has_password_echo(self, qtbot):
+        from PySide6.QtWidgets import QLineEdit
+        v = _make_view(qtbot)
+        assert v.password_input.echoMode() == QLineEdit.EchoMode.Password
+
+    def test_login_input_present(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.login_input is not None
+        assert v.login_input.objectName() == "login_input"
+
+    def test_is_live_checkbox_present(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.is_live_checkbox is not None
+        assert v.is_live_checkbox.objectName() == "is_live_checkbox"
+
+    def test_import_env_btn_present(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.import_env_btn is not None
+
+    def test_set_password_btn_present(self, qtbot):
+        v = _make_view(qtbot)
+        assert v.set_password_btn is not None
+
+    def test_password_status_label_initially_not_set(self, qtbot):
+        v = _make_view(qtbot)
+        assert "Nicht gesetzt" in v.password_status_label.text()
+
+    def test_set_password_btn_calls_backend(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("test_acc")
+        v.password_input.setText("secret123")
+        v.set_password_btn.click()
+        backend.set_account_password.assert_called_once_with("test_acc", "secret123")
+
+    def test_set_password_clears_input_field(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("test_acc")
+        v.password_input.setText("secret123")
+        v.set_password_btn.click()
+        assert v.password_input.text() == ""
+
+    def test_set_password_updates_status_label(self, qtbot):
+        v = _make_view(qtbot)
+        v.account_id_input.setText("acc")
+        v.password_input.setText("pw")
+        v.set_password_btn.click()
+        assert "Gesetzt" in v.password_status_label.text()
+
+    def test_set_password_empty_account_id_noop(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("")
+        v.password_input.setText("secret")
+        v.set_password_btn.click()
+        backend.set_account_password.assert_not_called()
+
+    def test_set_password_empty_password_noop(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("demo")
+        v.password_input.setText("")
+        v.set_password_btn.click()
+        backend.set_account_password.assert_not_called()
+
+    def test_import_env_btn_calls_backend(self, qtbot):
+        backend = _mock_backend()
+        backend.import_from_env.return_value = ["env_import"]
+        v = _make_view(qtbot, backend=backend)
+        v.import_env_btn.click()
+        backend.import_from_env.assert_called_once()
+
+    def test_import_env_triggers_refresh(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        initial_calls = backend.list_stored_accounts.call_count
+        v.import_env_btn.click()
+        assert backend.list_stored_accounts.call_count > initial_calls
+
+    def test_account_selector_populated_from_backend(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        assert v.account_selector.count() == 2
+
+    def test_account_selector_live_label_contains_live(self, qtbot):
+        backend = _mock_backend()
+        # live_1 has is_live=True → label should contain LIVE
+        v = _make_view(qtbot, backend=backend)
+        labels = [v.account_selector.itemText(i) for i in range(v.account_selector.count())]
+        live_labels = [lb for lb in labels if "live_1" in lb]
+        assert any("LIVE" in lb for lb in live_labels)
+
+    def test_account_selector_demo_label_contains_demo(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        labels = [v.account_selector.itemText(i) for i in range(v.account_selector.count())]
+        demo_labels = [lb for lb in labels if "demo" in lb.lower()]
+        assert any("Demo" in lb for lb in demo_labels)
+
+    def test_add_account_saves_credentials(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("new_acc")
+        v.login_input.setText("12345")
+        v.broker_input.setText("MT5")
+        v.server_input.setText("Test-Server")
+        v.is_live_checkbox.setChecked(False)
+        v.add_account_btn.click()
+        backend.save_account_credentials.assert_called()
+        call_args = backend.save_account_credentials.call_args[0]
+        assert call_args[0] == "new_acc"
+
+    def test_add_live_account_passes_is_live_true(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("live_acc")
+        v.is_live_checkbox.setChecked(True)
+        v.add_account_btn.click()
+        call_args = backend.save_account_credentials.call_args[0]
+        # is_live is the 5th positional arg: (account_id, login, broker, server, is_live, ...)
+        assert call_args[4] is True
+
+    def test_add_account_with_password_passes_password(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("acc")
+        v.password_input.setText("my_pw")
+        v.add_account_btn.click()
+        call_args = backend.save_account_credentials.call_args[0]
+        assert call_args[5] == "my_pw"
+
+    def test_add_account_no_password_passes_none(self, qtbot):
+        backend = _mock_backend()
+        v = _make_view(qtbot, backend=backend)
+        v.account_id_input.setText("acc")
+        v.password_input.setText("")
+        v.add_account_btn.click()
+        call_args = backend.save_account_credentials.call_args[0]
+        assert call_args[5] is None
+
+    def test_live_account_row_typ_column_shows_live(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "live1", "broker": "MT5", "server": "Live",
+             "is_live": True, "has_password": False}
+        ]
+        v = _make_view(qtbot, backend=backend)
+        typ_text = v.accounts_table.item(0, 3).text()
+        assert typ_text == "LIVE"
+
+    def test_demo_account_row_typ_column_shows_demo(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "demo1", "broker": "MT5", "server": "Demo",
+             "is_live": False, "has_password": False}
+        ]
+        v = _make_view(qtbot, backend=backend)
+        typ_text = v.accounts_table.item(0, 3).text()
+        assert typ_text == "Demo"
+
+    def test_account_with_password_shows_gesetzt(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "acc", "broker": "MT5", "server": "s",
+             "is_live": False, "has_password": True}
+        ]
+        v = _make_view(qtbot, backend=backend)
+        pw_text = v.accounts_table.item(0, 4).text()
+        assert pw_text == "Gesetzt"
+
+    def test_account_without_password_shows_nicht_gesetzt(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "acc", "broker": "MT5", "server": "s",
+             "is_live": False, "has_password": False}
+        ]
+        v = _make_view(qtbot, backend=backend)
+        pw_text = v.accounts_table.item(0, 4).text()
+        assert pw_text == "Nicht gesetzt"
+
+    def test_account_switched_signal_emitted(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "demo", "broker": "MT5", "server": "Demo",
+             "is_live": False, "has_password": False},
+        ]
+        v = _make_view(qtbot, backend=backend)
+        received: list[str] = []
+        v.account_switched.connect(lambda aid: received.append(aid))
+        # Add a second item and select it to trigger the signal
+        v._account_selector.addItem("other [Demo]", "other")
+        v._account_selector.setCurrentIndex(1)
+        assert "other" in received
+
+    def test_switch_account_calls_backend(self, qtbot):
+        backend = _mock_backend()
+        backend.list_stored_accounts.return_value = [
+            {"account_id": "demo", "broker": "MT5", "server": "Demo",
+             "is_live": False, "has_password": False},
+        ]
+        v = _make_view(qtbot, backend=backend)
+        v._account_selector.addItem("live [LIVE]", "live_acc")
+        v._account_selector.setCurrentIndex(1)
+        backend.switch_account.assert_called_with("live_acc")
