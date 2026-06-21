@@ -103,6 +103,8 @@ class FeatureBuilder:
         include_sentiment:    bool  = False,
         sentiment_feature:    Optional[Any] = None,
         feature_dir:          Optional[str | Path] = None,
+        mtf_adx_threshold:    float = 25.0,
+        mtf_flip_lookback:    int   = 3,
     ) -> None:
         self.ema_periods          = ema_periods   or [9, 20, 50, 200]
         self.sma_periods          = sma_periods   or [50]
@@ -126,6 +128,8 @@ class FeatureBuilder:
         self.include_sentiment    = include_sentiment
         self._sentiment_feature   = sentiment_feature
         self.feature_dir          = Path(feature_dir) if feature_dir else None
+        self.mtf_adx_threshold    = mtf_adx_threshold
+        self.mtf_flip_lookback    = mtf_flip_lookback
 
     # â"€â"€ Factory â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
@@ -145,6 +149,8 @@ class FeatureBuilder:
             warmup_candles        = ft.get("warmup_candles", 200),
             include_time_features = ft.get("include_time_features", True),
             include_sentiment     = ft.get("include_sentiment", False),
+            mtf_adx_threshold     = ft.get("mtf_adx_threshold", 25.0),
+            mtf_flip_lookback     = ft.get("mtf_flip_lookback", 3),
         )
 
     # â"€â"€ Oeffentliche Methode â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -304,12 +310,22 @@ class FeatureBuilder:
 
         if df_h4 is not None:
             _h4_mtf = FeatureBuilder._compute_mtf_trend(df_h4, tf_hours=4)
+            _h4_mtf = FeatureBuilder._gate_mtf_trend(
+                _h4_mtf,
+                adx_threshold=self.mtf_adx_threshold,
+                flip_lookback=self.mtf_flip_lookback,
+            )
             features["h4_trend"] = FeatureBuilder._merge_mtf_trend(
                 features["timestamp"], _h4_mtf
             )
 
         if df_d1 is not None:
             _d1_mtf = FeatureBuilder._compute_mtf_trend(df_d1, tf_hours=24)
+            _d1_mtf = FeatureBuilder._gate_mtf_trend(
+                _d1_mtf,
+                adx_threshold=self.mtf_adx_threshold,
+                flip_lookback=self.mtf_flip_lookback,
+            )
             features["d1_trend"] = FeatureBuilder._merge_mtf_trend(
                 features["timestamp"], _d1_mtf
             )
@@ -389,12 +405,62 @@ class FeatureBuilder:
         atr14  = AverageTrueRange(
             high=high, low=low, close=close, window=14, fillna=False
         ).average_true_range()
+        adx14  = ADXIndicator(
+            high=high, low=low, close=close, window=14, fillna=False
+        ).adx().fillna(0.0)
 
         safe_atr = atr14.where(atr14 > 0, other=np.nan)
         trend = ((ema50 - ema200) / safe_atr).fillna(0.0)
 
         close_time = pd.to_datetime(df_ohlcv["timestamp"].values) + pd.Timedelta(hours=tf_hours)
-        return pd.DataFrame({"close_time": close_time, "trend": trend.values})
+        return pd.DataFrame({
+            "close_time": close_time,
+            "trend":      trend.values,
+            "adx":        adx14.values,
+        })
+
+    @staticmethod
+    def _gate_mtf_trend(
+        mtf_df:        pd.DataFrame,
+        adx_threshold: float = 25.0,
+        flip_lookback: int   = 3,
+    ) -> pd.DataFrame:
+        """
+        Regime-Filter fuer MTF-Trendwerte.
+
+        Setzt trend = 0 (neutral) wenn der Trend als instabil gilt:
+          - ADX des HTF-Bars liegt unter adx_threshold  (kein klarer Trend)
+          - ODER es gab einen Vorzeichenwechsel von trend innerhalb der
+            letzten flip_lookback HTF-Bars  (frischer Trendwechsel)
+
+        Look-ahead-Freiheit: der Filter operiert ausschliesslich auf
+        abgeschlossenen HTF-Bars (close_time bereits gesetzt). Die
+        Zuordnung zu H1-Bars erfolgt weiterhin via merge_asof.
+
+        Parameters
+        ----------
+        mtf_df        : Ausgabe von _compute_mtf_trend (close_time, trend, adx).
+        adx_threshold : Mindestwert fuer ADX, damit Trend als stabil gilt.
+        flip_lookback : Anzahl zurueckliegender HTF-Bars, in denen ein
+                        Vorzeichenwechsel als 'frischer Trendwechsel' gilt.
+
+        Returns
+        -------
+        DataFrame mit 'close_time' und gefiltertem 'trend'.
+        """
+        mtf = mtf_df.copy().reset_index(drop=True)
+
+        sign = np.sign(mtf["trend"])
+        # True an Bar T wenn Vorzeichen gegenueber T-1 gewechselt hat
+        sign_flipped = (sign != sign.shift(1)).astype(int)
+        # True wenn irgendwo in den letzten flip_lookback Bars ein Wechsel war
+        recently_flipped = sign_flipped.rolling(flip_lookback, min_periods=1).max().astype(bool)
+
+        # Trend gilt als instabil wenn ADX zu niedrig ODER frischer Flip
+        unstable = (mtf["adx"] < adx_threshold) | recently_flipped
+        mtf["trend"] = mtf["trend"].where(~unstable, other=0.0)
+
+        return mtf[["close_time", "trend"]]
 
     @staticmethod
     def _merge_mtf_trend(h1_timestamps: pd.Series, mtf_df: pd.DataFrame) -> np.ndarray:

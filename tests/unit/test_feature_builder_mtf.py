@@ -63,6 +63,7 @@ class TestComputeMtfTrend:
         result = FeatureBuilder._compute_mtf_trend(df, tf_hours=4)
         assert "close_time" in result.columns
         assert "trend" in result.columns
+        assert "adx" in result.columns
 
     def test_close_time_equals_open_plus_tf(self):
         """close_time muss genau open_time + tf_hours sein."""
@@ -287,3 +288,198 @@ class TestBuildWithMtfFeatures:
         result = fb.build(df_h1, df_h4=df_h4)
         # Kein Fehler = kein AttributeError, Feature vorhanden
         assert "h4_trend" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# _gate_mtf_trend  -- Regime-Filter
+# ---------------------------------------------------------------------------
+
+def _make_mtf_df(
+    trends: list[float],
+    adxs:   list[float],
+    start:  str = "2023-01-02 00:00",
+    freq:   str = "4h",
+    tf_hours: int = 4,
+) -> pd.DataFrame:
+    """Baut einen kontrollierten mtf_df fuer Gate-Tests."""
+    n = len(trends)
+    assert len(adxs) == n
+    ts = pd.date_range(start, periods=n, freq=freq)
+    close_time = ts + pd.Timedelta(hours=tf_hours)
+    return pd.DataFrame({
+        "close_time": close_time,
+        "trend": trends,
+        "adx":   adxs,
+    })
+
+
+class TestGateMtfTrend:
+
+    def test_returns_dataframe_with_correct_columns(self):
+        mtf = _make_mtf_df([1.0, 1.5], [30.0, 30.0])
+        result = FeatureBuilder._gate_mtf_trend(mtf)
+        assert set(result.columns) == {"close_time", "trend"}
+
+    def test_stable_trend_passes_through(self):
+        """Trend ist stabil (ADX >= 25, kein Flip) -> echter Wert."""
+        trends = [2.0] * 10
+        adxs   = [30.0] * 10
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=3)
+        # Erste Bars koennen 0 sein wegen lookback-Initialisierung, ab Bar 3 stabil
+        assert result["trend"].iloc[4] == pytest.approx(2.0)
+        assert result["trend"].iloc[-1] == pytest.approx(2.0)
+
+    def test_low_adx_gates_to_zero(self):
+        """ADX < threshold -> Trend auf 0 gesetzt."""
+        trends = [2.0] * 5
+        adxs   = [15.0] * 5   # unter 25
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=1)
+        assert (result["trend"] == 0.0).all(), "Niedriger ADX sollte alle Werte auf 0 setzen"
+
+    def test_sign_flip_gates_during_lookback(self):
+        """
+        Vorzeichenwechsel an Bar T -> Bars T, T+1, ..., T+lookback-1 muessen 0 sein.
+        """
+        # Bars 0-4: trend positiv (+2), Bars 5-9: trend negativ (-2), alle ADX=30
+        trends = [2.0] * 5 + [-2.0] * 5
+        adxs   = [30.0] * 10
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=3)
+        # Bar 5 ist der Flip -> Bars 5,6,7 muessen 0 sein (lookback=3)
+        assert result["trend"].iloc[5] == pytest.approx(0.0), "Flip-Bar selbst muss 0 sein"
+        assert result["trend"].iloc[6] == pytest.approx(0.0), "Bar T+1 nach Flip muss 0 sein"
+        assert result["trend"].iloc[7] == pytest.approx(0.0), "Bar T+2 nach Flip muss 0 sein"
+
+    def test_after_lookback_real_value_returns(self):
+        """Nach dem Lookback-Fenster kehrt der echte Trendwert zurueck."""
+        trends = [2.0] * 5 + [-2.0] * 10
+        adxs   = [30.0] * 15
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=3)
+        # Bar 8 = 3 Bars nach dem Flip (Bar 5) -> sollte -2.0 sein
+        assert result["trend"].iloc[8] == pytest.approx(-2.0), \
+            f"Nach lookback sollte echter Wert -2.0 kommen, got {result['trend'].iloc[8]}"
+
+    def test_adx_threshold_configurable(self):
+        """threshold=50: hohe Anforderung -> mehr Bars werden 0."""
+        trends = [2.0] * 10
+        adxs   = [30.0] * 10   # ADX=30, passt nur bei threshold<=30
+        mtf = _make_mtf_df(trends, adxs)
+        result_low  = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=1)
+        result_high = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=50.0, flip_lookback=1)
+        # Bei low threshold sollten spaetere Bars echte Werte haben
+        assert result_low["trend"].iloc[-1] == pytest.approx(2.0)
+        # Bei high threshold (50 > 30) alle Bars = 0
+        assert (result_high["trend"] == 0.0).all()
+
+    def test_flip_lookback_configurable(self):
+        """flip_lookback=1: nur der Flip-Bar selbst wird gedaempft."""
+        trends = [2.0] * 5 + [-2.0] * 5
+        adxs   = [30.0] * 10
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=1)
+        # Nur Bar 5 (Flip) ist 0, Bar 6 hat echten Wert -2.0
+        assert result["trend"].iloc[5] == pytest.approx(0.0)
+        assert result["trend"].iloc[6] == pytest.approx(-2.0)
+
+    def test_no_nan_in_output(self):
+        trends = [1.5, -0.5, 2.0, 0.0, -1.0]
+        adxs   = [20.0, 35.0, 28.0, 10.0, 40.0]
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf)
+        assert not result["trend"].isna().any()
+
+    def test_combined_gate_adx_and_flip(self):
+        """Beide Bedingungen erzwingen 0, auch wenn nur eine zutrifft."""
+        # Bar 0: ADX=10 (gated)
+        # Bar 1: ADX=30, kein Flip (passt, echter Wert)
+        # Bar 2: ADX=30, Flip von positiv auf negativ (gated)
+        # Bar 3: ADX=30, kein neuer Flip (je nach lookback evtl noch gated)
+        trends = [2.0, 2.0, -2.0, -2.0]
+        adxs   = [10.0, 30.0, 30.0, 30.0]
+        mtf = _make_mtf_df(trends, adxs)
+        result = FeatureBuilder._gate_mtf_trend(mtf, adx_threshold=25.0, flip_lookback=1)
+        assert result["trend"].iloc[0] == pytest.approx(0.0), "ADX zu niedrig"
+        assert result["trend"].iloc[1] == pytest.approx(2.0), "Stabile Phase"
+        assert result["trend"].iloc[2] == pytest.approx(0.0), "Flip-Bar"
+        assert result["trend"].iloc[3] == pytest.approx(-2.0), "Nach Flip (lookback=1)"
+
+    def test_gate_preserves_close_time(self):
+        """close_time darf durch den Filter nicht veraendert werden."""
+        mtf = _make_mtf_df([1.0, 2.0, 3.0], [30.0, 30.0, 30.0])
+        result = FeatureBuilder._gate_mtf_trend(mtf)
+        pd.testing.assert_series_equal(
+            result["close_time"].reset_index(drop=True),
+            mtf["close_time"].reset_index(drop=True),
+        )
+
+
+class TestBuildWithGatedMtfFeatures:
+    """Integration: build() mit eingeschaltetem Regime-Filter."""
+
+    def _fb_gated(self, adx_threshold=25.0, flip_lookback=3) -> FeatureBuilder:
+        return FeatureBuilder(
+            ema_periods=[9, 20, 50, 200],
+            sma_periods=[50],
+            rsi_periods=[14],
+            atr_period=14,
+            warmup_candles=200,
+            mtf_adx_threshold=adx_threshold,
+            mtf_flip_lookback=flip_lookback,
+        )
+
+    def test_gated_output_has_no_nan(self):
+        fb = self._fb_gated()
+        df_h1 = _make_h1_ohlcv(periods=500)
+        df_h4 = _make_h4_ohlcv(periods=300)
+        result = fb.build(df_h1, df_h4=df_h4)
+        assert result["h4_trend"].isna().sum() == 0
+
+    def test_gated_values_are_subset_of_ungated(self):
+        """Jeder nicht-null Wert im gefilterten Output muss auch im ungefilterten vorkommen."""
+        df_h1 = _make_h1_ohlcv(periods=500)
+        df_h4 = _make_h4_ohlcv(periods=300)
+        # Ungated: hohe threshold die nie zutrifft (negativ)
+        fb_ungated = FeatureBuilder(
+            ema_periods=[9, 20, 50, 200], sma_periods=[50], rsi_periods=[14],
+            atr_period=14, warmup_candles=200,
+            mtf_adx_threshold=-1.0, mtf_flip_lookback=999,
+        )
+        # Gated: normale threshold
+        fb_gated = FeatureBuilder(
+            ema_periods=[9, 20, 50, 200], sma_periods=[50], rsi_periods=[14],
+            atr_period=14, warmup_candles=200,
+            mtf_adx_threshold=25.0, mtf_flip_lookback=3,
+        )
+        res_ungated = fb_ungated.build(df_h1, df_h4=df_h4)
+        res_gated   = fb_gated.build(df_h1, df_h4=df_h4)
+        # Gating kann nur 0-Werte einfuehren, echte Werte nie veraendern
+        mask_nonzero = res_gated["h4_trend"] != 0.0
+        np.testing.assert_array_almost_equal(
+            res_gated["h4_trend"][mask_nonzero].values,
+            res_ungated["h4_trend"][mask_nonzero].values,
+        )
+
+    def test_high_adx_threshold_zeros_all(self):
+        """Sehr hohe ADX-Schwelle -> alle MTF-Werte sind 0."""
+        fb = self._fb_gated(adx_threshold=999.0, flip_lookback=1)
+        df_h1 = _make_h1_ohlcv(periods=500)
+        df_h4 = _make_h4_ohlcv(periods=300)
+        result = fb.build(df_h1, df_h4=df_h4)
+        assert (result["h4_trend"] == 0.0).all(), "Bei ADX-threshold=999 muessen alle h4_trend=0 sein"
+
+    def test_gated_feature_count_unchanged(self):
+        """Gating veraendert nicht die Anzahl der Feature-Spalten."""
+        fb_g = self._fb_gated()
+        fb_u = FeatureBuilder(
+            ema_periods=[9, 20, 50, 200], sma_periods=[50], rsi_periods=[14],
+            atr_period=14, warmup_candles=200, mtf_adx_threshold=-1.0,
+        )
+        df_h1 = _make_h1_ohlcv(periods=500)
+        df_h4 = _make_h4_ohlcv(periods=300)
+        assert (
+            len(fb_g.build(df_h1, df_h4=df_h4).columns) ==
+            len(fb_u.build(df_h1, df_h4=df_h4).columns)
+        )
