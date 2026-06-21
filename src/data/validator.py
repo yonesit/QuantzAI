@@ -355,8 +355,8 @@ class DataValidator:
             tz=timestamps.tzinfo,
         )
 
-        # Wochenenden herausfiltern (Samstag=5, Sonntag=6)
-        if timeframe.upper() in ("H1", "H4", "M1", "M5", "M15", "M30"):
+        # Wochenenden herausfiltern (Samstag=5, Sonntag=6) – gilt fuer alle Intraday- und Daily-TF
+        if timeframe.upper() in ("M1", "M5", "M15", "M30", "H1", "H4", "D1"):
             expected = expected[expected.dayofweek < 5]
 
         missing_ts = expected.difference(timestamps)

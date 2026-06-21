@@ -130,31 +130,33 @@ class TestFeatureNames:
     def test_cci_column_present(self, features):
         assert "cci_20" in features.columns
 
-    def test_williams_column_present(self, features):
-        assert "williams_r" in features.columns
+    def test_williams_column_absent(self, features):
+        assert "williams_r" not in features.columns
 
     def test_atr_column_present(self, features):
         assert "atr_14" in features.columns
 
     def test_bollinger_columns_present(self, features):
-        for col in ["bb_upper", "bb_mid", "bb_lower", "bb_width", "bb_pct"]:
+        for col in ["bb_upper", "bb_lower", "bb_width"]:
             assert col in features.columns, f"{col} fehlt"
+        for col in ["bb_mid", "bb_pct"]:
+            assert col not in features.columns, f"{col} wurde entfernt und sollte fehlen"
 
     def test_keltner_columns_present(self, features):
-        for col in ["kc_upper", "kc_mid", "kc_lower"]:
-            assert col in features.columns, f"{col} fehlt"
+        assert "kc_lower" in features.columns
+        for col in ["kc_upper", "kc_mid"]:
+            assert col not in features.columns, f"{col} wurde entfernt und sollte fehlen"
 
     def test_obv_column_present(self, features):
         assert "obv" in features.columns
 
-    def test_derived_features_present(self, features):
-        for col in ["candle_body", "candle_direction",
-                    "high_low_range", "close_position"]:
-            assert col in features.columns, f"{col} fehlt"
+    def test_derived_features_absent(self, features):
+        for col in ["candle_body", "candle_direction", "high_low_range", "close_position"]:
+            assert col not in features.columns, f"{col} wurde entfernt und sollte fehlen"
 
     def test_time_features_present(self, features):
         assert "hour_of_day" in features.columns
-        assert "day_of_week" in features.columns
+        assert "day_of_week" not in features.columns
 
     def test_time_features_absent_when_disabled(self, ohlcv):
         fb = FeatureBuilder(warmup_candles=210, include_time_features=False)
@@ -185,27 +187,17 @@ class TestValueRanges:
         valid = features[["bb_upper", "bb_lower"]].dropna()
         assert (valid["bb_upper"] >= valid["bb_lower"]).all()
 
-    def test_candle_direction_values(self, features):
-        directions = features["candle_direction"].unique()
-        assert set(directions).issubset({-1, 0, 1})
-
-    def test_close_position_between_0_and_1(self, features):
-        cp = features["close_position"].dropna()
-        assert (cp >= 0).all() and (cp <= 1).all()
-
-    def test_candle_body_non_negative(self, features):
-        assert (features["candle_body"] >= 0).all()
-
-    def test_high_low_range_positive(self, features):
-        assert (features["high_low_range"] > 0).all()
+    def test_regime_values(self, features):
+        assert "regime" in features.columns
+        assert set(features["regime"].unique()).issubset({0, 1, 2})
 
     def test_hour_of_day_range(self, features):
         h = features["hour_of_day"]
         assert h.min() >= 0 and h.max() <= 23
 
-    def test_day_of_week_range(self, features):
-        d = features["day_of_week"]
-        assert d.min() >= 0 and d.max() <= 6
+    def test_hour_of_day_is_only_time_feature(self, features):
+        assert "hour_of_day" in features.columns
+        assert "day_of_week" not in features.columns
 
 
 # ─────────────────────────────────────────────
@@ -352,14 +344,16 @@ class TestFeatureNamesProperty:
     def test_feature_names_contains_all_groups(self, fb):
         names = fb.feature_names
         assert "ema_9"       in names
-        assert "sma_20"      in names
         assert "macd"        in names
         assert "rsi_14"      in names
         assert "atr_14"      in names
         assert "bb_upper"    in names
         assert "obv"         in names
-        assert "candle_body" in names
         assert "hour_of_day" in names
+        assert "regime"      in names
+        # removed features
+        assert "candle_body"  not in names
+        assert "day_of_week"  not in names
 
     def test_feature_names_match_df_columns(self, fb, ohlcv):
         result = fb.build(ohlcv)

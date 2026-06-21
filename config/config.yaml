@@ -20,7 +20,7 @@ data_validation:
 
 features:
   ema_periods: [9, 20, 50, 200]
-  sma_periods: [20, 50]
+  sma_periods: [50]
   rsi_periods: [14]
   atr_period: 14
   bollinger_period: 20

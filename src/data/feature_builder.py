@@ -31,7 +31,6 @@ from ta.trend import (
 )
 from ta.momentum import (
     RSIIndicator, StochasticOscillator,
-    WilliamsRIndicator,
 )
 from ta.trend import CCIIndicator
 from ta.volatility import (
@@ -106,7 +105,7 @@ class FeatureBuilder:
         feature_dir:          Optional[str | Path] = None,
     ) -> None:
         self.ema_periods          = ema_periods   or [9, 20, 50, 200]
-        self.sma_periods          = sma_periods   or [20, 50]
+        self.sma_periods          = sma_periods   or [50]
         self.rsi_periods          = rsi_periods   or [14]
         self.atr_period           = atr_period
         self.bollinger_period     = bollinger_period
@@ -156,6 +155,8 @@ class FeatureBuilder:
         symbol:     str = "",
         timeframe:  str = "",
         save:       bool = False,
+        df_h4:      Optional[pd.DataFrame] = None,
+        df_d1:      Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
         Berechnet alle Features und gibt einen DataFrame zurueck.
@@ -166,6 +167,9 @@ class FeatureBuilder:
         symbol    : Symbol-Name fuer Dateinamen (z.B. "EURUSD")
         timeframe : Timeframe fuer Dateinamen (z.B. "H1")
         save      : Parquet-Datei speichern wenn True
+        df_h4     : Optionaler H4-OHLCV-DataFrame fuer Multi-Timeframe-Kontext.
+                    Erzeugt Feature 'h4_trend' = (EMA50-EMA200)/ATR14 auf H4-Basis.
+        df_d1     : Optionaler D1-OHLCV-DataFrame. Erzeugt Feature 'd1_trend'.
 
         Returns
         -------
@@ -240,12 +244,7 @@ class FeatureBuilder:
                          window=self.cci_period, fillna=False).cci().shift(1)
         )
 
-        features["williams_r"] = (
-            WilliamsRIndicator(high=high, low=low, close=close,
-                               lbp=self.williams_period, fillna=False).williams_r().shift(1)
-        )
-
-        # â"€â"€ Volatilitaets-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€
+        #â"€â"€ Volatilitaets-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
         features[f"atr_{self.atr_period}"] = (
             AverageTrueRange(high=high, low=low, close=close,
@@ -259,10 +258,8 @@ class FeatureBuilder:
             fillna=False,
         )
         features["bb_upper"]  = bb.bollinger_hband().shift(1)
-        features["bb_mid"]    = bb.bollinger_mavg().shift(1)
         features["bb_lower"]  = bb.bollinger_lband().shift(1)
         features["bb_width"]  = bb.bollinger_wband().shift(1)
-        features["bb_pct"]    = bb.bollinger_pband().shift(1)
 
         kc = KeltnerChannel(
             high=high, low=low, close=close,
@@ -271,8 +268,6 @@ class FeatureBuilder:
             multiplier=self.keltner_atr_mult,
             fillna=False,
         )
-        features["kc_upper"] = kc.keltner_channel_hband().shift(1)
-        features["kc_mid"]   = kc.keltner_channel_mband().shift(1)
         features["kc_lower"] = kc.keltner_channel_lband().shift(1)
 
         # â"€â"€ Volumen-Indikatoren â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -282,26 +277,42 @@ class FeatureBuilder:
             .on_balance_volume().shift(1)
         )
 
-        # â"€â"€ Abgeleitete Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-        # KEIN shift() â€" werden aus aktueller Candle berechnet (kein Zukunftswissen)
+        # ── Marktregime-Feature ─────────────────────────────────────────────────
+        # Basiert auf bereits-geshifteten adx/atr_14 — kein Look-ahead.
+        # RANGING=0  TRENDING=1  HIGH_VOLATILITY=2
+        # Prioritaet: HIGH_VOLATILITY > TRENDING > RANGING (wie RegimeDetector)
+        _atr_col = f"atr_{self.atr_period}"
+        _atr_roll = features[_atr_col].rolling(50, min_periods=1).mean()
+        _hv = features[_atr_col] > _atr_roll * 1.5
+        _tr = features["adx"] >= 25.0
+        features["regime"] = np.where(_hv, 2, np.where(_tr, 1, 0)).astype(int)
 
-        # shift(1): Modell sieht Eigenschaften der abgeschlossenen Vorkerze,
-        # nicht der aktuellen Bar – verhindert Korrelation mit LabelBuilder-TP/SL.
-        hl_range = high - low
-        features["candle_body"]      = (close - open_).abs().shift(1)
-        features["candle_direction"] = (close - open_).apply(np.sign).astype(int).shift(1)
-        features["high_low_range"]   = (high - low).shift(1)
-        features["close_position"]   = pd.Series(
-            np.where(hl_range > 0, (close - low) / hl_range, 0.5),
-            index=close.index,
-        ).shift(1)
-
-        # â"€â"€ Zeit-Features â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+        # ── Zeit-Features ────────────────────────────────────────────────────────
 
         if self.include_time_features:
             ts = pd.DatetimeIndex(df["timestamp"])
             features["hour_of_day"] = ts.hour
-            features["day_of_week"] = ts.dayofweek   # 0=Mo, 4=Fr
+
+        # ── Multi-Timeframe-Features (optional) ─────────────────────────────────
+        # Kontinuierliche Encoding-Wahl: (EMA50-EMA200)/ATR14
+        #   + gibt Richtung UND Staerke (vs. binaeres +1/-1)
+        #   + skalierungsinvariant durch ATR-Normierung
+        #   + LightGBM findet optimale Schwellwerte selbst
+        # Kein Look-ahead: _merge_mtf_trend nutzt close_time = open_time + tf_hours,
+        # d.h. fuer H1-Bar T wird nur der letzte HTF-Bar verwendet, dessen
+        # Schlusskurs-Zeitpunkt <= T liegt (abgeschlossene Bar, nicht laufende).
+
+        if df_h4 is not None:
+            _h4_mtf = FeatureBuilder._compute_mtf_trend(df_h4, tf_hours=4)
+            features["h4_trend"] = FeatureBuilder._merge_mtf_trend(
+                features["timestamp"], _h4_mtf
+            )
+
+        if df_d1 is not None:
+            _d1_mtf = FeatureBuilder._compute_mtf_trend(df_d1, tf_hours=24)
+            features["d1_trend"] = FeatureBuilder._merge_mtf_trend(
+                features["timestamp"], _d1_mtf
+            )
 
         # ── Sentiment-Feature (optional, via features.include_sentiment: true) ─
 
@@ -349,6 +360,77 @@ class FeatureBuilder:
         logger.info("Features saved | {path}", path=path)
         return path
 
+    @staticmethod
+    def _compute_mtf_trend(df_ohlcv: pd.DataFrame, tf_hours: int) -> pd.DataFrame:
+        """
+        Berechnet den normalisierten Trend-Feature fuer einen hoeheren Timeframe.
+
+        Trendstaerke = (EMA50 - EMA200) / ATR14
+          Positiv  -> Bullentrend  (schnelle EMA ueber langsamer EMA)
+          Negativ  -> Baerentrend
+          ~0       -> kein klarer Trend
+
+        Parameters
+        ----------
+        df_ohlcv  : OHLCV-DataFrame mit Spalten timestamp, open, high, low, close.
+        tf_hours  : Nominale Bar-Laenge in Stunden (H4=4, D1=24).
+                    Wird zur Berechnung der close_time = open_time + tf_hours genutzt.
+
+        Returns
+        -------
+        DataFrame mit 'close_time' (Zeitpunkt des Bar-Schlusses) und 'trend'.
+        """
+        close  = df_ohlcv["close"].reset_index(drop=True)
+        high   = df_ohlcv["high"].reset_index(drop=True)
+        low    = df_ohlcv["low"].reset_index(drop=True)
+
+        ema50  = EMAIndicator(close=close, window=50,  fillna=False).ema_indicator()
+        ema200 = EMAIndicator(close=close, window=200, fillna=False).ema_indicator()
+        atr14  = AverageTrueRange(
+            high=high, low=low, close=close, window=14, fillna=False
+        ).average_true_range()
+
+        safe_atr = atr14.where(atr14 > 0, other=np.nan)
+        trend = ((ema50 - ema200) / safe_atr).fillna(0.0)
+
+        close_time = pd.to_datetime(df_ohlcv["timestamp"].values) + pd.Timedelta(hours=tf_hours)
+        return pd.DataFrame({"close_time": close_time, "trend": trend.values})
+
+    @staticmethod
+    def _merge_mtf_trend(h1_timestamps: pd.Series, mtf_df: pd.DataFrame) -> np.ndarray:
+        """
+        Weist jedem H1-Bar den Trendwert des zuletzt ABGESCHLOSSENEN HTF-Bars zu.
+
+        Verwendet pd.merge_asof (direction='backward'): sucht den letzten
+        HTF-Bar mit close_time <= H1-Bar-Zeitstempel.
+        Laufende (noch nicht geschlossene) Bars werden dadurch nie verwendet.
+        H1-Bars ohne vorangehenden HTF-Bar erhalten 0.0 (neutral).
+
+        Parameters
+        ----------
+        h1_timestamps : pd.Series mit H1-Bar-Zeitstempeln (Reihenfolge beliebig).
+        mtf_df        : Ausgabe von _compute_mtf_trend (close_time, trend).
+
+        Returns
+        -------
+        np.ndarray mit Trend-Werten, Reihenfolge entspricht h1_timestamps.
+        """
+        original_order = np.arange(len(h1_timestamps))
+        h1_df = pd.DataFrame({
+            "timestamp": pd.to_datetime(h1_timestamps.values),
+            "_order":    original_order,
+        }).sort_values("timestamp")
+
+        merged = pd.merge_asof(
+            h1_df,
+            mtf_df.sort_values("close_time")[["close_time", "trend"]],
+            left_on="timestamp",
+            right_on="close_time",
+            direction="backward",
+        )
+        merged["trend"] = merged["trend"].fillna(0.0)
+        return merged.sort_values("_order")["trend"].to_numpy(dtype=float)
+
     @property
     def feature_names(self) -> list[str]:
         """Gibt alle Feature-Namen zurueck (ohne timestamp)."""
@@ -361,15 +443,14 @@ class FeatureBuilder:
                   "adx", "adx_pos", "adx_neg"]
         for p in self.rsi_periods:
             names.append(f"rsi_{p}")
-        names += ["stoch_k", "stoch_d", "cci_20", "williams_r",
+        names += ["stoch_k", "stoch_d", "cci_20",
                   f"atr_{self.atr_period}",
-                  "bb_upper", "bb_mid", "bb_lower", "bb_width", "bb_pct",
-                  "kc_upper", "kc_mid", "kc_lower",
+                  "bb_upper", "bb_lower", "bb_width",
+                  "kc_lower",
                   "obv",
-                  "candle_body", "candle_direction",
-                  "high_low_range", "close_position"]
+                  "regime"]
         if self.include_time_features:
-            names += ["hour_of_day", "day_of_week"]
+            names += ["hour_of_day"]
         if self.include_sentiment:
             names.append("sentiment_score")
         return names
