@@ -495,8 +495,9 @@ class _PositionsTable(QFrame):
         self._table.setObjectName("positions_table")
         self._table.setHorizontalHeaderLabels(_POS_HEADERS)
         hdr = self._table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setStretchLastSection(True)
+        for col in range(len(_POS_HEADERS) - 1):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(len(_POS_HEADERS) - 1, QHeaderView.ResizeMode.Stretch)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)

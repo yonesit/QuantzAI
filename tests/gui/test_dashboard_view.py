@@ -548,9 +548,11 @@ class TestPositionsTable:
             assert hdr.sectionResizeMode(i) == QHeaderView.ResizeMode.ResizeToContents
 
     def test_last_section_stretches(self, qtbot: QtBot):
+        from PySide6.QtWidgets import QHeaderView
         t = _PositionsTable()
         qtbot.addWidget(t)
-        assert t.table.horizontalHeader().stretchLastSection()
+        hdr = t.table.horizontalHeader()
+        assert hdr.sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
 
 
 # ─────────────────────────────────────────────────────────────────────────────
