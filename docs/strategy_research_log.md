@@ -89,3 +89,19 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 - Auffälligkeiten/Extremwerte: Ausreisser oben: Fenster 13 OOS-Sharpe=22.59; Ausreisser unten: Fenster 7 OOS-Sharpe=-10.33; hour_of_day konstant=0 auf D1 (informationslos, aber modellseitig korrekt ignoriert)
 - Urteil: Kandidat
 - Begründung des Urteils: Ø OOS-Sharpe 1.208 > 0 und 53% profitable Fenster > 50%. Beide Mindestanforderungen erfuellt.
+
+**Robustheits-Analyse (hinzugefügt 2026-06-22):**
+
+| Metrik | MIT Fenster 13 | OHNE Fenster 13 |
+|--------|---------------|----------------|
+| Ø OOS-Sharpe | 1.208 | 0.518 |
+| Std OOS-Sharpe | 7.594 | 6.656 |
+| Median OOS-Sharpe | 1.449 | 1.449 |
+| Profitable Fenster | 17/32 (53%) | 16/31 (52%) |
+
+**Fenster 13 Zeitraum:** 2022-05-08 – 2022-06-08
+
+**Historische Einordnung:** Fenster 13 (2022-05-08 bis 2022-06-08): Peak der Fed-BoJ-Zinsdivergenz 2022. Die US-Fed erhöhte im Mai 2022 die Zinsen um 50 Bp (stärkstes Anheben seit 2000), während die BoJ ihre Nullzinspolitik und Yield-Curve-Control (YCC, 10J JGB-Cap 0.25%) unbeirrt fortsetzte. USDJPY stieg in dieser Phase von ~128 auf ~136 – eine in 20 Jahren nicht gesehene Yen-Abwertungsgeschwindigkeit. Dieses Event ist ein singuläres, nicht-wiederholbares Makro-Ereignis: die extremste geldpolitische Divergenz zwischen zwei G7-Zentralbanken seit 1998. Die BoJ beendete YCC schrittweise ab Juli 2023. Ein erneutes Setup dieser Art in einem 4-Jahres-Backtest-Fenster ist sehr unwahrscheinlich.
+
+**Korrigiertes Urteil:** Kandidat
+**Begründung:** Auch ohne Ausreisser Fenster 13: Ø OOS-Sharpe 0.518 > 0 und 52% profitable Fenster > 50%. Beide Kriterien erfuellt, aber knapp – weitere Tests empfohlen.
