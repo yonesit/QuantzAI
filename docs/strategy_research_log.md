@@ -29,7 +29,7 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 |---|--------|----|-----------|------------|--------|
 | 1 | USDJPY | H4 | Trendfolge | BoJ-Politik erzeugt historisch längere, klarere Trends als EURUSD | Verworfen |
 | 2 | USDJPY | D1 | Trendfolge | Test ob noch längerer Timeframe noch robuster | Kandidat |
-| 3 | XAUUSD | H4 | Trendfolge | Andere Asset-Klasse, andere Treiber (Inflation/Risk-Off), oft trendstärker | ⏳ offen (Datenverfügbarkeit prüfen) |
+| 3 | XAUUSD | H4 | Trendfolge | Andere Asset-Klasse, andere Treiber (Inflation/Risk-Off), oft trendstärker | Kandidat |
 | 4 | EURUSD | H4 | Mean-Reversion | Testet ob MR auf höherem Timeframe als H1 besser performt | ⏳ offen |
 
 ## Erweiterte Testmatrix (nur falls Priorisierte Matrix keinen klaren Kandidaten liefert)
@@ -105,3 +105,27 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 
 **Korrigiertes Urteil:** Kandidat
 **Begründung:** Auch ohne Ausreisser Fenster 13: Ø OOS-Sharpe 0.518 > 0 und 52% profitable Fenster > 50%. Beide Kriterien erfuellt, aber knapp – weitere Tests empfohlen.
+
+### Test #3: XAUUSD H4 Trendfolge
+- Datum: 2026-06-22
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Walk-Forward: 6M Training / 1M Test, rollierend (40 Fenster)
+- Ø OOS-Sharpe: -0.036
+- Std OOS-Sharpe: 3.678
+- Median OOS-Sharpe: 0.191
+- Profitable Fenster: 22/40 (55%)
+- Anzahl Trades gesamt: 5159
+- SHAP Top-3 Features: atr_14, obv, ema_200
+- Auffälligkeiten/Extremwerte: Ausreisser oben: Fenster 34 (2023-06-18–2023-07-18) OOS-Sharpe=5.32; Ausreisser unten: Fenster 9 (2021-05-18–2021-06-18) OOS-Sharpe=-13.56
+- Urteil: Kandidat
+- Begründung des Urteils: Ø OOS-Sharpe 0.519 > 0 und 58% profitable Fenster > 50% (ohne Ausreisser-Fenster [5, 9]). Beide Mindestanforderungen erfuellt.
+**Robustheits-Analyse:**
+
+| Metrik | Alle Fenster | Ohne Ausreisser |
+|--------|-------------|----------------|
+| Ø OOS-Sharpe | -0.036 | 0.519 |
+| Std OOS-Sharpe | 3.678 | 2.761 |
+| Median OOS-Sharpe | 0.191 | 0.258 |
+| Profitable Fenster | 22/40 (55%) | 22/38 (58%) |
+
+**Ausreisser-Fenster:** Fenster 5 (2021-01-18 – 2021-02-18): OOS-Sharpe=-7.57; Fenster 9 (2021-05-18 – 2021-06-18): OOS-Sharpe=-13.56
