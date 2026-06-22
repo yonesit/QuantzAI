@@ -27,7 +27,7 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 
 | # | Symbol | TF | Strategie | Begründung | Status |
 |---|--------|----|-----------|------------|--------|
-| 1 | USDJPY | H4 | Trendfolge | BoJ-Politik erzeugt historisch längere, klarere Trends als EURUSD | ⏳ offen |
+| 1 | USDJPY | H4 | Trendfolge | BoJ-Politik erzeugt historisch längere, klarere Trends als EURUSD | Verworfen |
 | 2 | USDJPY | D1 | Trendfolge | Test ob noch längerer Timeframe noch robuster | ⏳ offen |
 | 3 | XAUUSD | H4 | Trendfolge | Andere Asset-Klasse, andere Treiber (Inflation/Risk-Off), oft trendstärker | ⏳ offen (Datenverfügbarkeit prüfen) |
 | 4 | EURUSD | H4 | Mean-Reversion | Testet ob MR auf höherem Timeframe als H1 besser performt | ⏳ offen |
@@ -64,4 +64,15 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 
 ## Ergebnisse (wird laufend ergänzt)
 
-*(noch keine neuen Einträge – Test #1 steht an)*
+### Test #1: USDJPY H4 Trendfolge
+- Datum: 2026-06-22
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Walk-Forward: 6M Training / 1M Test, rollierend
+- Ø OOS-Sharpe: -0.671
+- Std OOS-Sharpe: 4.480
+- Profitable Fenster: 15/40 (38%)
+- Anzahl Trades gesamt: 5199
+- SHAP Top-3 Features: atr_14, ema_200, obv
+- Auffälligkeiten/Extremwerte: Extremer Ausreisser oben: Fenster 19 OOS-Sharpe=11.52; Extremer Ausreisser unten: Fenster 39 OOS-Sharpe=-7.84
+- Urteil: Verworfen
+- Begründung des Urteils: Ø OOS-Sharpe -0.671 <= 0 und nur 38% profitable Fenster. Kein stabiler Edge nachweisbar.
