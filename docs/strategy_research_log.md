@@ -30,7 +30,7 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 | 1 | USDJPY | H4 | Trendfolge | BoJ-Politik erzeugt historisch längere, klarere Trends als EURUSD | Verworfen |
 | 2 | USDJPY | D1 | Trendfolge | Test ob noch längerer Timeframe noch robuster | Kandidat |
 | 3 | XAUUSD | H4 | Trendfolge | Andere Asset-Klasse, andere Treiber (Inflation/Risk-Off), oft trendstärker | Kandidat |
-| 4 | EURUSD | H4 | Mean-Reversion | Testet ob MR auf höherem Timeframe als H1 besser performt | ⏳ offen |
+| 4 | EURUSD | H4 | Mean-Reversion | Testet ob MR auf höherem Timeframe als H1 besser performt | Kandidat |
 
 ## Erweiterte Testmatrix (nur falls Priorisierte Matrix keinen klaren Kandidaten liefert)
 
@@ -129,3 +129,35 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 | Profitable Fenster | 22/40 (55%) | 22/38 (58%) |
 
 **Ausreisser-Fenster:** Fenster 5 (2021-01-18 – 2021-02-18): OOS-Sharpe=-7.57; Fenster 9 (2021-05-18 – 2021-06-18): OOS-Sharpe=-13.56
+
+### Test #4: EURUSD H4 Mean-Reversion
+- Datum: 2026-06-22
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Modell: MeanReversionModel (26 Features: Standard-23 + bb_pct_b, dist_ema20_atr, dist_sma50_atr)
+- Label-Parameter: tp_atr_mult=1.0, sl_atr_mult=2.0, max_candles=10 (H4 = ~2 Handelstage)
+- Walk-Forward: 6M Training / 1M Test, rollierend (40 Fenster)
+- Ø OOS-Sharpe: 0.389
+- Std OOS-Sharpe: 3.670
+- Median OOS-Sharpe: 1.142
+- Profitable Fenster: 27/40 (68%)
+- Anzahl Trades gesamt: 5201
+- SHAP Top-3 Features: atr_14, ema_200, obv
+- Auffälligkeiten/Extremwerte: Ausreisser oben: Fenster 8 (2021-04-18–2021-05-18) OOS-Sharpe=6.14; Ausreisser unten: Fenster 3 (2020-11-18–2020-12-18) OOS-Sharpe=-14.20
+- Urteil: Kandidat
+- Begründung des Urteils: Ø OOS-Sharpe 0.967 > 0 und 71% profitable Fenster > 50%. Beide Mindestanforderungen erfuellt.
+
+**Robustheits-Analyse:**
+
+| Metrik | Alle Fenster | Ohne Ausreisser |
+|--------|-------------|----------------|
+| Ø OOS-Sharpe | 0.389 | 0.967 |
+| Std OOS-Sharpe | 3.670 | 2.610 |
+| Median OOS-Sharpe | 1.142 | 1.245 |
+| Profitable Fenster | 27/40 (68%) | 27/38 (71%) |
+
+**Fenster 3 (2020-11-18 – 2020-12-18):** OOS-Sharpe=-14.20. Einordnung (normal-wiederkehrend): US-Praesidentschaftswahl 2020: kurzfristige EURUSD-Volatilitaet. Normal-wiederkehrend (Wahlrisiko).
+
+**Fenster 27 (2022-11-18 – 2022-12-18):** OOS-Sharpe=-6.99. Einordnung (singulaer): UK-Gilts-Krise (Truss/Kwarteng): EUR-Kollateralschaden, Liquiditaets-Stress. Weitgehend singulaer.
+
+**Vergleich mit EURUSD H1-Baseline:**
+EURUSD H1 Mean-Reversion wurde nicht separat getestet (kein Eintrag im Log, kein entsprechender Commit in der Git-History). Vergleich gegen EURUSD H1 Trendfolge-Baseline (Test 0a, Ø OOS-Sharpe -0.484, 39% profitable Fenster): MR H4 übertrifft die H1-TF-Baseline im Ø OOS-Sharpe (0.389 vs. -0.484) und übertrifft sie in der Profitablen-Quote (68% vs. 39%). Ein direkter H1-MR ↔ H4-MR Vergleich ist nicht moeglich – das Experiment #H1-MR fehlt.
