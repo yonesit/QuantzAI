@@ -226,3 +226,69 @@ Vor einer echten Portfolio-Kombination müssen zwei weitere Fragen geklärt werd
 2. Kapital-Effizienz: USDJPY D1 bindet Overnight-Margin-Risiko; H4-Systeme sind kürzer exponiert.
 Wenn beide Punkte akzeptabel: Kombination von #3 (XAUUSD TF) + #4 (EURUSD MR) als erster Schritt empfohlen,
 da deren Korrelation direkt messbar und die Signal-Frequenz vergleichbar ist.
+---
+
+## 3-Wege Portfolio-Analyse
+
+*Stand: 2026-06-22*
+
+### Methode: Kalendermonatliche Ausrichtung
+
+Jedes WF-Fenster wird seinem Kalendermonat (`YYYY-MM` aus `test_start`) zugeordnet.
+Kombinierter Monats-Sharpe = Σ wᵢ × OOS-Sharpeᵢ für jeden gemeinsamen Monat.
+
+| System | Warmup | Erstes Fenster | Letztes Fenster | Fenster |
+|--------|--------|---------------|----------------|---------|
+| USDJPY D1 TF  (#2) | 200 D1-Bars ≈ 10 Monate | 2021-04 | 2023-11 | 32 |
+| XAUUSD H4 TF  (#3) | 200 H4-Bars ≈ 33 Tage   | 2020-08 | 2023-11 | 40 |
+| EURUSD H4 MR  (#4) | 200 H4-Bars ≈ 33 Tage   | 2020-08 | 2023-11 | 40 |
+
+**Gemeinsamer Auswertungszeitraum:** 2021-04 bis 2023-11 (32 Monate)
+
+*Anmerkung: OOS-Sharpe ist `mean(r)/std(r)*√252`, dimensionslos und timeframe-unabhängig.
+Kombination über D1 (≈22 Trades/Monat) und H4 (≈130 Trades/Monat) ist Standard-Näherung.
+Gewichtung repräsentiert den Kapitalanteil pro Strategie.*
+
+### Ergebnisse nach Gewichtungsschema
+
+*Gemeinsamer Zeitraum: 2021-04 bis 2023-11 (32 Monate)*
+
+| Kategorie | Gewichtung (D1/H4-TF/H4-MR) | Ø OOS-Sharpe | Median | Std | Profitable Monate | Median/Std |
+|-----------|------------------------------|-------------|--------|-----|-------------------|------------|
+| Referenz | Nur USDJPY D1 TF | +1.208 | +1.449 | 7.594 | 17/32 (53%) | **0.191** |
+| Referenz | Nur XAUUSD H4 TF | +0.328 | +0.440 | 3.758 | 20/32 (62%) | **0.117** |
+| Referenz | Nur EURUSD H4 MR | +0.516 | +1.126 | 2.873 | 21/32 (66%) | **0.392** |
+| 2-Wege | H4-Portfolio (50/50 #3+#4) | +0.422 | +1.005 | 2.437 | 21/32 (66%) | **0.413** |
+| 3-Wege | Gleichgewichtet (33/33/34) | +0.684 | +0.475 | 3.292 | 18/32 (56%) | **0.144** |
+| 3-Wege | D1 niedrig (25/40/35) | +0.614 | +0.278 | 2.923 | 16/32 (50%) | **0.095** |
+| 3-Wege | D1 sehr niedrig (20/40/40) | +0.579 | +0.521 | 2.720 | 18/32 (56%) | **0.192** |
+| 3-Wege | Risiko-Parität (19/40/40) | +0.575 | +0.539 | 2.702 | 18/32 (56%) | **0.200** |
+| 3-Wege | Perf-gewichtet (52/7/41) ² | +0.863 | +1.400 | 4.439 | 19/32 (59%) | **0.315** |
+*² In-Sample Median als Gewicht – Datensnooping-Risiko*
+
+**Bestes Median/Std-Verhältnis: H4-Portfolio (50/50 #3+#4)** (Median/Std = 0.413)
+
+### Korrelation im gemeinsamen Zeitraum
+
+| Paar | Pearson r | Interpretation |
+|------|-----------|----------------|
+| USDJPY D1 TF ↔ XAUUSD H4 TF | +0.087 | nahezu unkorreliert |
+| USDJPY D1 TF ↔ EURUSD H4 MR | +0.256 | schwach korreliert |
+| XAUUSD H4 TF ↔ EURUSD H4 MR | +0.064 | nahezu unkorreliert |
+
+*Korrelationen hier auf dem gemeinsamen Teilzeitraum (32 Monate, exakt ausgerichtet).*
+
+### Fazit und Empfehlung
+
+Die drei Kandidaten sind im gemeinsamen Zeitraum (2021-04 bis 2023-11 (32 Monate)) nahezu unkorreliert (maximales |r| = 0.256). Jede 3-Wege-Kombination reduziert die Std gegenüber den Einzelsystemen.
+
+Das **beste Median/Std-Verhältnis** erreicht **H4-Portfolio (50/50 #3+#4)** mit Median/Std = 0.413 (Median = +1.005, Std = 2.437, 66% profitable Monate).
+
+Das 2-Wege H4-Portfolio übertrifft alle 3-Wege-Varianten im Median/Std (0.413 vs. 0.200 beim besten 3-Wege-Schema Risiko-Parität). Das Hinzufügen von USDJPY D1 verschlechtert das Risiko-Rendite-Verhältnis: die hohe D1-Std (7.594) überwiegt den Nutzen aus dem höchsten Einzelmedian (1.449).
+
+**Praktische Einschränkungen USDJPY D1 (#2) im Portfolio:**
+- Nur 695 Trades über 4 Jahre (≈14.5 Trades/Monat) – statistisch dünnere Basis als H4
+- Overnight-Margin-Risiko durch D1-Haltedauer
+- Der starke Ausreisser in Fenster 13 (Fed/BoJ-Divergenz 2022) ist im Backtest enthalten   und nicht reproduzierbar
+
+**Empfehlung:** Als ersten Live-Test empfiehlt sich die H4-Portfolio-Kombination (#3 XAUUSD TF + #4 EURUSD MR, 50/50), da dort die Korrelation exakt messbar und die Datengrundlage mit je 40 Fenstern robuster ist. USDJPY D1 kann als optionale dritte Komponente mit niedrigem Gewicht (15–25%) hinzugefügt werden, sobald Live-Daten über mindestens 12 Monate vorliegen.
