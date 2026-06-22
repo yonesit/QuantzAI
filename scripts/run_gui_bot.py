@@ -1,24 +1,31 @@
 """
 scripts/run_gui_bot.py
-QuantzAI GUI-Bot-Starter mit ECHTEN Komponenten, CONFIRM_REQUIRED-Modus, Paper-Trading.
+QuantzAI GUI-Bot-Starter – Portfolio-Modus (Demo-Live).
+
+Portfolio-Setup (2-Wege H4, validiert 2026-06-22):
+  - XAUUSD H4 Trendfolge    (SignalModel, Test #3)
+  - EURUSD H4 Mean-Reversion (MeanReversionModel, Test #4)
+  - 50/50 Risikoallokation pro Symbol (gleiche risk_per_trade_pct)
 
 Startet:
   - GUI (PySide6 MainWindow)
-  - Echte MT5-Verbindung fuer Live-EURUSD-H1-Daten
-  - Echtes SignalModel (neuestes models/signal_model_v1_*.joblib)
+  - Echte MT5-Verbindung fuer Live-Daten beider Symbole
+  - SignalModel        (XAUUSD H4, neuestes models/signal_model_v*.joblib)
+  - MeanReversionModel (EURUSD H4, neuestes models/mean_reversion_model*.joblib)
   - Echte PreTradeCheck (EconomicCalendar + Spread-Filter)
-  - Echte RiskGuard / PositionSizer / CorrelationGuard / AuditLog
-  - OrderExecutor im Paper-Modus (live_trading_enabled=False – kein echtes Geld)
+  - Gemeinsame RiskGuard / PositionSizer / CorrelationGuard / AuditLog
+  - OrderExecutor im Demo-Live-Modus (echte Positionen auf Demo-Konto)
   - CONFIRM_REQUIRED: Bot fragt per GUI-Banner vor jedem Trade nach Bestaetigung
   - ActivityLogWidget, OrderEventRelay alle verdrahtet
 
 Fehlschlag mit klarer Meldung wenn:
   - MT5_LOGIN / MT5_PASSWORD / MT5_SERVER fehlen in .env
-  - Kein trainiertes Modell in models/ vorhanden
+  - Kein XAUUSD TF-Modell oder kein EURUSD MR-Modell in models/ vorhanden
   - MT5-Verbindung schlaegt fehl
 
 Verwendung:
-  python scripts/run_gui_bot.py [--symbol EURUSD] [--interval 300] [--model PATH]
+  python scripts/run_gui_bot.py [--xauusd-model PATH] [--eurusd-mr-model PATH]
+                                 [--interval 300] [--config config.yaml]
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 from pathlib import Path
 
 # Projekt-Root in Pfad aufnehmen
@@ -90,8 +98,29 @@ def find_newest_model(model_dir: str | Path = "models") -> Path:
     if not candidates:
         raise StartupError(
             f"Kein trainiertes Modell in '{d}' gefunden.\n"
-            "Fuehre zuerst aus: python scripts/train_model.py --symbol EURUSD\n"
+            "Fuehre zuerst aus: python scripts/train_model.py --symbol XAUUSD\n"
             "Erwartetes Muster: models/signal_model_v1_YYYYMMDD.joblib"
+        )
+    return candidates[0]
+
+
+def find_newest_mr_model(model_dir: str | Path = "models") -> Path:
+    """
+    Gibt den Pfad zum neuesten MeanReversion-Modell zurueck.
+    Schlaegt mit StartupError fehl wenn kein MR-Modell vorhanden ist.
+    """
+    d = Path(model_dir)
+    candidates = sorted(
+        list(d.glob("mean_reversion_model*.joblib")),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise StartupError(
+            f"Kein MeanReversion-Modell in '{d}' gefunden.\n"
+            "Trainiere das MR-Modell und speichere es:\n"
+            "  model.save('models/mean_reversion_model_YYYYMMDD.joblib')\n"
+            "Erwartetes Muster: models/mean_reversion_model*.joblib"
         )
     return candidates[0]
 
@@ -196,7 +225,118 @@ def _build_oanda(config: dict):
 
 
 # ---------------------------------------------------------------------------
-# Den gesamten Trading-Stack bauen
+# MultiSymbolOrchestrator – Portfolio-Wrapper
+# ---------------------------------------------------------------------------
+
+class MultiSymbolOrchestrator:
+    """
+    Fuehrt mehrere (Symbol, Orchestrator)-Paare sequenziell in einer Schleife aus.
+
+    Implementiert die oeffentliche TradingOrchestrator-Schnittstelle fuer
+    BotControlsWidget / BotWorker, delegiert aber intern an je einen
+    TradingOrchestrator pro Symbol.
+
+    Parameter
+    ---------
+    pairs : Liste von (symbol, TradingOrchestrator)-Tuples.
+    """
+
+    def __init__(self, pairs: list) -> None:
+        self._pairs               = pairs          # [(symbol, orchestrator)]
+        self._stop_event          = threading.Event()
+        self._activity_callback   = None
+
+    # ── Oeffentliche Schnittstelle (wie TradingOrchestrator) ─────────────────
+
+    @property
+    def mode(self):
+        """Gibt den Modus des ersten Orchestrators zurueck."""
+        return self._pairs[0][1].mode
+
+    @property
+    def is_paused(self) -> bool:
+        return self._pairs[0][1].is_paused
+
+    def run_loop(self, symbols: list, interval_seconds: int = 300) -> None:
+        """
+        Haupt-Loop: iteriert sequenziell ueber alle (Symbol, Orchestrator)-Paare.
+        Der `symbols`-Parameter wird von BotWorker uebergeben, aber ignoriert –
+        die Iteration folgt self._pairs.
+        """
+        from loguru import logger
+        self._stop_event.clear()
+        sym_names = [s for s, _ in self._pairs]
+        logger.info(
+            "MultiSymbolOrchestrator: Loop gestartet | Symbole={s} | {iv}s Intervall",
+            s=sym_names, iv=interval_seconds,
+        )
+
+        while not self._stop_event.is_set():
+            for symbol, orch in self._pairs:
+                if self._stop_event.is_set():
+                    break
+                try:
+                    result = orch.run_cycle(symbol)
+                    if self._activity_callback is not None:
+                        try:
+                            self._activity_callback(result)
+                        except Exception as _cb_exc:  # noqa: BLE001
+                            logger.warning("activity_callback Fehler: {e}", e=_cb_exc)
+                    logger.info(
+                        "Zyklus | {sym} | action={a} | reason={r}",
+                        sym=symbol, a=result["action"], r=result["reason"],
+                    )
+                except KeyboardInterrupt:
+                    logger.info("MultiSymbolOrchestrator: KeyboardInterrupt -> Shutdown")
+                    self.stop()
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    import traceback as _tb
+                    tb = _tb.format_exc()
+                    logger.error(
+                        "MultiSymbolOrchestrator: Exception in run_cycle({s}):\n{tb}",
+                        s=symbol, tb=tb,
+                    )
+                    print(
+                        f"\n[MultiOrchestrator CRASH in run_cycle({symbol})]\n{tb}",
+                        flush=True,
+                    )
+
+            self._stop_event.wait(timeout=interval_seconds)
+
+        logger.info("MultiSymbolOrchestrator: Loop beendet.")
+
+    def stop(self) -> None:
+        """Signalisiert der run_loop()-Schleife, sauber zu beenden."""
+        self._stop_event.set()
+
+    def pause(self, reason: str = "") -> None:
+        for _, orch in self._pairs:
+            orch.pause(reason)
+
+    def resume(self) -> None:
+        for _, orch in self._pairs:
+            orch.resume()
+
+    def set_mode(self, new_mode) -> None:
+        for _, orch in self._pairs:
+            orch.set_mode(new_mode)
+
+    def set_activity_callback(self, callback) -> None:
+        self._activity_callback = callback
+
+    def set_confirmation_callback(self, callback) -> None:
+        for _, orch in self._pairs:
+            orch.set_confirmation_callback(callback)
+
+    def emergency_stop(self) -> None:
+        self.stop()
+        for _, orch in self._pairs:
+            orch.emergency_stop()
+
+
+# ---------------------------------------------------------------------------
+# Den gesamten Trading-Stack bauen (Single-Symbol – fuer Tests und Fallback)
 # ---------------------------------------------------------------------------
 
 def build_trading_stack(
@@ -209,7 +349,7 @@ def build_trading_stack(
     confirmation_callback=None,
 ) -> dict:
     """
-    Baut alle echten Komponenten und verdrahtet sie.
+    Baut alle echten Komponenten und verdrahtet sie (Single-Symbol).
 
     Parameters
     ----------
@@ -362,6 +502,218 @@ def build_trading_stack(
 
 
 # ---------------------------------------------------------------------------
+# Portfolio-Stack bauen (XAUUSD H4 TF + EURUSD H4 MR, 50/50)
+# ---------------------------------------------------------------------------
+
+def build_portfolio_stack(
+    *,
+    config: dict,
+    connector,
+    xauusd_model_path: Path,
+    eurusd_mr_model_path: Path,
+    confirmation_callback=None,
+) -> dict:
+    """
+    Baut den Portfolio-Trading-Stack fuer zwei Symbole und verdrahtet alles.
+
+    Symbole / Modelle:
+      XAUUSD H4  – Trendfolge  (SignalModel)
+      EURUSD H4  – Mean-Reversion (MeanReversionModel)
+
+    50/50 Risikoallokation: beide Orchestratoren teilen denselben PositionSizer
+    mit identischer risk_per_trade_pct. Der EURUSD-Orchestrator erhaelt einen
+    benutzerdefinierten Features-Loader, der die 3 MR-spezifischen Features
+    (bb_pct_b, dist_ema20_atr, dist_sma50_atr) nach dem Standard-DataPipeline-
+    Lauf ergaenzt.
+
+    Returns
+    -------
+    dict mit Schluesseln:
+      orchestrator  – MultiSymbolOrchestrator (XAUUSD + EURUSD)
+      order_executor, order_relay, symbols, pipeline, audit_log, connector
+    """
+    from loguru import logger
+    import glob as _glob
+    import pandas as _pd
+
+    from src.data.data_router   import DataRouter, PriceValidator
+    from src.data.validator     import DataValidator
+    from src.data.feature_builder import FeatureBuilder
+    from src.data.pipeline      import DataPipeline
+    from src.data.calendar      import EconomicCalendar
+    from src.risk.risk_guard    import RiskGuard
+    from src.risk.position_sizer import PositionSizer
+    from src.risk.correlation_guard import CorrelationGuard
+    from src.risk.pre_trade_check import PreTradeCheck
+    from src.models.signal_model import SignalModel
+    from src.models.mean_reversion_model import MeanReversionModel
+    from src.execution.order_executor import OrderExecutor
+    from src.monitoring.audit_log import AuditLog
+    from src.orchestrator import TradingOrchestrator
+    from src.modes import TradingMode
+    from gui.widgets.order_event_relay import OrderEventRelay
+
+    risk_cfg  = config.get("risk", {})
+    model_cfg = config.get("model", {})
+
+    # ── Modelle laden ──────────────────────────────────────────────────────
+    logger.info("Lade XAUUSD H4 TF-Modell: {path}", path=xauusd_model_path)
+    xauusd_model = SignalModel.load(xauusd_model_path)
+    logger.info("XAUUSD SignalModel geladen ({feats} Features)",
+                feats=len(xauusd_model._feature_names))
+
+    logger.info("Lade EURUSD H4 MR-Modell: {path}", path=eurusd_mr_model_path)
+    eurusd_model = MeanReversionModel.load(eurusd_mr_model_path)
+    logger.info("EURUSD MeanReversionModel geladen")
+
+    # ── Gemeinsame Infrastruktur ───────────────────────────────────────────
+    oanda = _build_oanda(config)
+    router = DataRouter(
+        mt5=connector,
+        oanda=oanda,
+        validator=PriceValidator(
+            max_pips=config.get("broker", {}).get("max_price_discrepancy_pips", 5.0),
+        ),
+    )
+    validator       = DataValidator()
+    feature_builder = FeatureBuilder.from_config(_ROOT / "config" / "config.yaml")
+    features_dir    = str(_ROOT / "data" / "features")
+    pipeline = DataPipeline(
+        router=router,
+        validator=validator,
+        feature_builder=feature_builder,
+        features_dir=features_dir,
+        reports_dir=str(_ROOT / "data" / "processed" / "quality_reports"),
+    )
+
+    calendar = EconomicCalendar(cache_dir=str(_ROOT / "data" / "processed" / "calendar"))
+    calendar.refresh()
+
+    pre_trade_check = PreTradeCheck(
+        calendar=calendar,
+        connector=connector,
+        max_spread_pips=risk_cfg.get("spread_filter_pips", 3.0),
+    )
+
+    # Portfolio-RiskGuard: ueberwacht Gesamt-Portfolio-Drawdown
+    risk_guard = RiskGuard(
+        daily_loss_limit_pct=risk_cfg.get("daily_loss_limit_pct", 5.0),
+        max_drawdown_pct=risk_cfg.get("max_drawdown_pct", 15.0),
+    )
+
+    # 50/50: identische Risikoallokation pro Symbol
+    position_sizer = PositionSizer(
+        risk_per_trade_pct=risk_cfg.get("max_risk_per_trade_pct", 1.0),
+    )
+
+    # Gemeinsamer CorrelationGuard verhindert doppelte korrelierte Positionen
+    correlation_guard = CorrelationGuard()
+
+    audit_log = AuditLog(db_path=str(_ROOT / "data" / "processed" / "audit.db"))
+
+    os.environ.setdefault("CONFIRM_LIVE", "yes")
+    order_executor = OrderExecutor(
+        connector=connector,
+        live_trading_enabled=True,
+        paper_trades_path=str(_ROOT / "data" / "processed" / "paper_trades.json"),
+        audit_log=audit_log,
+    )
+
+    order_relay = OrderEventRelay()
+    order_relay.attach(order_executor)
+
+    def _balance_getter() -> float:
+        try:
+            info = connector.get_account_info()
+            return float(info.get("balance", 10_000.0))
+        except Exception:  # noqa: BLE001
+            return 10_000.0
+
+    confidence = model_cfg.get("confidence_threshold", 0.55)
+
+    # ── XAUUSD H4 – Standard-Features-Loader (23 Baseline-Features) ───────
+    def _xauusd_features_loader(symbol: str) -> "_pd.DataFrame | None":
+        pattern = str(Path(features_dir) / f"{symbol}_H4_*.parquet")
+        files   = sorted(_glob.glob(pattern))
+        if not files:
+            return None
+        try:
+            return _pd.read_parquet(files[-1])
+        except Exception:  # noqa: BLE001
+            return None
+
+    xauusd_orch = TradingOrchestrator(
+        data_pipeline=pipeline,
+        risk_guard=risk_guard,
+        pre_trade_check=pre_trade_check,
+        signal_model=xauusd_model,
+        correlation_guard=correlation_guard,
+        position_sizer=position_sizer,
+        order_executor=order_executor,
+        audit_log=audit_log,
+        features_dir=features_dir,
+        features_loader=_xauusd_features_loader,
+        balance_getter=_balance_getter,
+        timeframe="H4",
+        signal_confidence_threshold=confidence,
+        mode=TradingMode.CONFIRM_REQUIRED,
+        confirmation_callback=confirmation_callback,
+    )
+
+    # ── EURUSD H4 – MR-Features-Loader (ergaenzt bb_pct_b etc.) ──────────
+    _mr_instance = MeanReversionModel()
+
+    def _eurusd_mr_features_loader(symbol: str) -> "_pd.DataFrame | None":
+        pattern = str(Path(features_dir) / f"{symbol}_H4_*.parquet")
+        files   = sorted(_glob.glob(pattern))
+        if not files:
+            return None
+        try:
+            df = _pd.read_parquet(files[-1])
+        except Exception:  # noqa: BLE001
+            return None
+        return _mr_instance._add_mr_features(df)
+
+    eurusd_orch = TradingOrchestrator(
+        data_pipeline=pipeline,
+        risk_guard=risk_guard,
+        pre_trade_check=pre_trade_check,
+        signal_model=eurusd_model,
+        correlation_guard=correlation_guard,
+        position_sizer=position_sizer,
+        order_executor=order_executor,
+        audit_log=audit_log,
+        features_dir=features_dir,
+        features_loader=_eurusd_mr_features_loader,
+        balance_getter=_balance_getter,
+        timeframe="H4",
+        signal_confidence_threshold=confidence,
+        mode=TradingMode.CONFIRM_REQUIRED,
+        confirmation_callback=confirmation_callback,
+    )
+
+    portfolio_orch = MultiSymbolOrchestrator([
+        ("XAUUSD", xauusd_orch),
+        ("EURUSD", eurusd_orch),
+    ])
+
+    logger.info(
+        "Portfolio-Stack bereit | XAUUSD H4 TF + EURUSD H4 MR | "
+        "50/50 Risiko | Modus=CONFIRM_REQUIRED | Demo-Live=True"
+    )
+
+    return {
+        "orchestrator":   portfolio_orch,
+        "order_executor": order_executor,
+        "order_relay":    order_relay,
+        "symbols":        ["XAUUSD", "EURUSD"],
+        "pipeline":       pipeline,
+        "audit_log":      audit_log,
+        "connector":      connector,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dashboard-Backend mit Live-Positionen
 # ---------------------------------------------------------------------------
 
@@ -414,14 +766,21 @@ class _LiveDashboardBackend:
 
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="QuantzAI GUI-Bot (echte Komponenten, CONFIRM_REQUIRED, Paper-Trading)",
+        description=(
+            "QuantzAI Portfolio-Bot (XAUUSD H4 TF + EURUSD H4 MR, "
+            "CONFIRM_REQUIRED, Demo-Live)"
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--symbol",   default="EURUSD", help="Handelssymbol")
-    p.add_argument("--tf",       default="H1",     help="Zeitrahmen")
+    p.add_argument(
+        "--xauusd-model", default=None, dest="xauusd_model",
+        help="XAUUSD H4 TF-Modell (.joblib). Standard: neuestes signal_model_v* in models/",
+    )
+    p.add_argument(
+        "--eurusd-mr-model", default=None, dest="eurusd_mr_model",
+        help="EURUSD H4 MR-Modell (.joblib). Standard: neuestes mean_reversion_model* in models/",
+    )
     p.add_argument("--interval", type=int, default=300, help="Sekunden zwischen Zyklen")
-    p.add_argument("--model",    default=None,
-                   help="Modell-Pfad (.joblib). Standard: neuestes in models/")
     p.add_argument("--config",   default="config/config.yaml")
     return p.parse_args(argv)
 
@@ -439,12 +798,17 @@ def main(argv=None) -> int:
 
     # ── Fruehzeitig pruefen ───────────────────────────────────────────────
     try:
-        config     = _load_config(args.config)
-        model_path = Path(args.model) if args.model else find_newest_model()
-        if not model_path.exists():
-            raise StartupError(
-                f"Modell-Datei nicht gefunden: {model_path}"
-            )
+        config = _load_config(args.config)
+        xauusd_model_path    = (
+            Path(args.xauusd_model) if args.xauusd_model else find_newest_model()
+        )
+        eurusd_mr_model_path = (
+            Path(args.eurusd_mr_model) if args.eurusd_mr_model else find_newest_mr_model()
+        )
+        if not xauusd_model_path.exists():
+            raise StartupError(f"XAUUSD-Modell nicht gefunden: {xauusd_model_path}")
+        if not eurusd_mr_model_path.exists():
+            raise StartupError(f"EURUSD-MR-Modell nicht gefunden: {eurusd_mr_model_path}")
     except StartupError as exc:
         logger.error("Startup abgebrochen: {exc}", exc=exc)
         print(f"\nFEHLER: {exc}", file=sys.stderr)
@@ -459,8 +823,9 @@ def main(argv=None) -> int:
         return 1
 
     logger.info(
-        "MT5 verbunden | Modell: {m} | Symbol: {s} | Modus: CONFIRM_REQUIRED | Demo-Live: True",
-        m=model_path.name, s=args.symbol,
+        "MT5 verbunden | XAUUSD-Modell: {xm} | EURUSD-MR: {em} | "
+        "Modus: CONFIRM_REQUIRED | Demo-Live: True",
+        xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
     )
 
     # ── GUI starten ───────────────────────────────────────────────────────
@@ -499,14 +864,13 @@ def main(argv=None) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Account-Info-Abruf fehlgeschlagen: {exc}", exc=exc)
 
-    # ── Trading-Stack aufbauen ────────────────────────────────────────────
+    # ── Portfolio-Stack aufbauen ──────────────────────────────────────────
     try:
-        stack = build_trading_stack(
+        stack = build_portfolio_stack(
             config=config,
             connector=connector,
-            model_path=model_path,
-            symbol=args.symbol,
-            timeframe=args.tf,
+            xauusd_model_path=xauusd_model_path,
+            eurusd_mr_model_path=eurusd_mr_model_path,
             confirmation_callback=window.confirmation_callback,
         )
     except StartupError as exc:
@@ -516,8 +880,8 @@ def main(argv=None) -> int:
 
     # ── GUI-Verbindungen herstellen ───────────────────────────────────────
 
-    relay            = stack["order_relay"]
-    order_executor   = stack["order_executor"]
+    relay          = stack["order_relay"]
+    order_executor = stack["order_executor"]
 
     # Dashboard auf Live-Backend umstellen (zeigt echte Positionen + P&L)
     live_backend = _LiveDashboardBackend(connector, order_executor)
@@ -548,8 +912,8 @@ def main(argv=None) -> int:
 
     window.dashboard_view.position_close_requested.connect(_close_position)
 
-    # Markt-Chart mit MT5-Connector verdrahten
-    window.dashboard_view.set_chart_connector(connector, args.symbol)
+    # Markt-Chart mit XAUUSD als Primär-Symbol
+    window.dashboard_view.set_chart_connector(connector, "XAUUSD")
 
     # #56/#57/#58: Bot-Steuerung + ActivityLog + Bestätigung
     window.bot_controls.set_orchestrator(
@@ -563,12 +927,13 @@ def main(argv=None) -> int:
 
     logger.info(
         "GUI-Bot bereit. Klicke 'Start' in der Bot-Steuerung (Sidebar).\n"
-        "  Modell  : {m}\n"
-        "  Symbol  : {s}  TF: {tf}\n"
-        "  Modus   : CONFIRM_REQUIRED\n"
-        "  Demo-Live: True  (echte MT5-Positionen auf Demo-Konto)\n"
-        "  Intervall: {iv}s",
-        m=model_path.name, s=args.symbol, tf=args.tf, iv=args.interval,
+        "  Portfolio    : XAUUSD H4 TF (SignalModel) + EURUSD H4 MR (MeanReversionModel)\n"
+        "  XAUUSD-Modell: {xm}\n"
+        "  EURUSD-Modell: {em}\n"
+        "  Modus        : CONFIRM_REQUIRED\n"
+        "  Demo-Live    : True  (echte MT5-Positionen auf Demo-Konto)\n"
+        "  Intervall    : {iv}s",
+        xm=xauusd_model_path.name, em=eurusd_mr_model_path.name, iv=args.interval,
     )
 
     return app.exec()

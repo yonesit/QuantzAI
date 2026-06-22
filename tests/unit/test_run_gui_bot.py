@@ -21,9 +21,12 @@ from scripts.run_gui_bot import (
     _load_config,
     _load_env,
     find_newest_model,
+    find_newest_mr_model,
     build_mt5_connector,
     _OandaStub,
     build_trading_stack,
+    build_portfolio_stack,
+    MultiSymbolOrchestrator,
 )
 
 
@@ -86,8 +89,18 @@ def tmp_model(tmp_path) -> Path:
         "params": {"objective": "multiclass", "num_class": 3},
     }
     p = tmp_path / "signal_model_v1_20260101.joblib"
+    import joblib
     joblib.dump(payload, p)
     return p
+
+
+@pytest.fixture
+def tmp_mr_model(tmp_path, tmp_model) -> Path:
+    """MR-Modell – gleiche joblib-Struktur wie SignalModel, andere Dateiname."""
+    import shutil
+    mr_path = tmp_path / "mean_reversion_model_20260101.joblib"
+    shutil.copy(tmp_model, mr_path)
+    return mr_path
 
 
 @pytest.fixture
@@ -183,6 +196,33 @@ class TestFindNewestModel:
 
 
 # ---------------------------------------------------------------------------
+# find_newest_mr_model
+# ---------------------------------------------------------------------------
+
+class TestFindNewestMrModel:
+    def test_returns_newest_mr_model(self, tmp_path):
+        import time
+        m1 = tmp_path / "mean_reversion_model_20260101.joblib"
+        m1.write_text("x")
+        time.sleep(0.01)
+        m2 = tmp_path / "mean_reversion_model_20260201.joblib"
+        m2.write_text("x")
+
+        result = find_newest_mr_model(tmp_path)
+        assert result == m2
+
+    def test_raises_when_no_mr_model(self, tmp_path):
+        with pytest.raises(StartupError, match="MeanReversion"):
+            find_newest_mr_model(tmp_path)
+
+    def test_does_not_return_signal_model(self, tmp_path):
+        """signal_model_v*.joblib darf NICHT als MR-Modell gelten."""
+        (tmp_path / "signal_model_v1_20260101.joblib").write_text("x")
+        with pytest.raises(StartupError, match="MeanReversion"):
+            find_newest_mr_model(tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # build_mt5_connector
 # ---------------------------------------------------------------------------
 
@@ -249,7 +289,7 @@ class TestOandaStub:
 
 
 # ---------------------------------------------------------------------------
-# build_trading_stack
+# build_trading_stack (Single-Symbol)
 # ---------------------------------------------------------------------------
 
 class TestBuildTradingStack:
@@ -368,6 +408,422 @@ class TestBuildTradingStack:
 
 
 # ---------------------------------------------------------------------------
+# build_portfolio_stack
+# ---------------------------------------------------------------------------
+
+class TestBuildPortfolioStack:
+    """Testet den Portfolio-Stack-Aufbau (XAUUSD TF + EURUSD MR)."""
+
+    def test_returns_all_expected_keys(
+        self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
+    ):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        for key in ("orchestrator", "order_executor", "order_relay", "symbols",
+                    "pipeline", "audit_log", "connector"):
+            assert key in stack, f"Schuessel '{key}' fehlt im Portfolio-Stack"
+
+    def test_symbols_are_xauusd_and_eurusd(
+        self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
+    ):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        assert stack["symbols"] == ["XAUUSD", "EURUSD"]
+
+    def test_orchestrator_is_multi_symbol(
+        self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
+    ):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        assert isinstance(stack["orchestrator"], MultiSymbolOrchestrator)
+
+    def test_mode_is_confirm_required(
+        self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
+    ):
+        from src.modes import TradingMode
+
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        assert stack["orchestrator"].mode == TradingMode.CONFIRM_REQUIRED
+
+    def test_confirmation_callback_forwarded_to_both(
+        self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
+    ):
+        """confirmation_callback muss an BEIDE Orchestratoren weitergegeben werden."""
+        cb = MagicMock()
+        cb.confirm_order = MagicMock(return_value=True)
+
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+                confirmation_callback=cb,
+            )
+
+        multi_orch = stack["orchestrator"]
+        for symbol, orch in multi_orch._pairs:
+            assert orch._confirmation_callback is cb, (
+                f"Orchestrator fuer {symbol}: confirmation_callback nicht gesetzt"
+            )
+
+
+# ---------------------------------------------------------------------------
+# MultiSymbolOrchestrator
+# ---------------------------------------------------------------------------
+
+class TestMultiSymbolOrchestrator:
+    """Testet das MultiSymbolOrchestrator-Wrapper-Verhalten."""
+
+    def _make_mock_orch(self, signal="flat"):
+        """Erstellt einen gemockten TradingOrchestrator."""
+        from src.modes import TradingMode
+        orch = MagicMock()
+        orch.mode = TradingMode.CONFIRM_REQUIRED
+        orch.is_paused = False
+        orch.run_cycle.return_value = {
+            "symbol": "SYM",
+            "signal": signal,
+            "action": "flat",
+            "reason": "signal_flat",
+            "ticket": None,
+            "lot_size": None,
+            "step_stopped_at": "flat_signal",
+            "checks": [],
+            "timestamp": None,
+        }
+        return orch
+
+    def test_mode_returns_first_orch_mode(self):
+        from src.modes import TradingMode
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+        assert multi.mode == TradingMode.CONFIRM_REQUIRED
+
+    def test_stop_sets_stop_event(self):
+        orch = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch)])
+        multi.stop()
+        assert multi._stop_event.is_set()
+
+    def test_pause_delegates_to_all(self):
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+        multi.pause("test")
+        orch1.pause.assert_called_once_with("test")
+        orch2.pause.assert_called_once_with("test")
+
+    def test_resume_delegates_to_all(self):
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+        multi.resume()
+        orch1.resume.assert_called_once()
+        orch2.resume.assert_called_once()
+
+    def test_set_mode_delegates_to_all(self):
+        from src.modes import TradingMode
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+        multi.set_mode(TradingMode.SUGGEST_ONLY)
+        orch1.set_mode.assert_called_once_with(TradingMode.SUGGEST_ONLY)
+        orch2.set_mode.assert_called_once_with(TradingMode.SUGGEST_ONLY)
+
+    def test_set_confirmation_callback_delegates_to_all(self):
+        cb = MagicMock()
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+        multi.set_confirmation_callback(cb)
+        orch1.set_confirmation_callback.assert_called_once_with(cb)
+        orch2.set_confirmation_callback.assert_called_once_with(cb)
+
+    def test_run_loop_calls_run_cycle_for_each_symbol(self):
+        """run_loop muss run_cycle fuer jedes Symbol aufrufen und dann stoppen."""
+        import threading
+        orch1 = self._make_mock_orch()
+        orch2 = self._make_mock_orch()
+
+        cycle_count = [0]
+        target = 2  # ein kompletter Durchlauf durch beide Symbole
+
+        original_result = orch1.run_cycle.return_value.copy()
+        original_result2 = orch2.run_cycle.return_value.copy()
+
+        multi = MultiSymbolOrchestrator([("A", orch1), ("B", orch2)])
+
+        def _on_activity(result):
+            cycle_count[0] += 1
+            if cycle_count[0] >= target:
+                multi.stop()
+
+        multi.set_activity_callback(_on_activity)
+
+        t = threading.Thread(
+            target=multi.run_loop,
+            args=(["A", "B"],),
+            kwargs={"interval_seconds": 0},
+        )
+        t.start()
+        t.join(timeout=3.0)
+
+        assert not t.is_alive(), "run_loop hat sich nicht beendet!"
+        assert orch1.run_cycle.call_count >= 1
+        assert orch2.run_cycle.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Regressionstest: Bestaetigung darf Bot nicht inaktiv machen
+# ---------------------------------------------------------------------------
+
+class TestConfirmationContinuityRegression:
+    """
+    Regression: Nach einer Bestaetigung darf der Bot-Loop NICHT inaktiv werden.
+
+    Reproduziert den frueheren Bug wo der Bot nach der ersten Bestaetigung
+    keine weiteren Zyklen mehr ausgefuehrt hat.
+    """
+
+    @pytest.fixture
+    def long_signal_orchestrator(self):
+        """TradingOrchestrator im CONFIRM_REQUIRED-Modus der immer LONG signalisiert."""
+        import pandas as pd
+        from src.orchestrator import TradingOrchestrator
+        from src.modes import TradingMode
+
+        features = pd.DataFrame({
+            "close": [1.2000],
+            "atr":   [0.0010],
+            "f0":    [0.5],
+        })
+
+        pipeline     = MagicMock()
+        risk_guard   = MagicMock()
+        risk_guard.is_trading_allowed.return_value           = True
+        risk_guard.get_position_size_multiplier.return_value = 1.0
+
+        pre_trade = MagicMock()
+        pre_trade.is_safe_to_trade.return_value = (True, "")
+
+        signal_model = MagicMock()
+        signal_model.get_signal.return_value    = "long"
+        signal_model.predict_proba.return_value = {
+            "long": 0.70, "short": 0.15, "neutral": 0.15
+        }
+
+        corr_guard = MagicMock()
+        corr_guard.can_open_position.return_value = True
+
+        size_result = MagicMock()
+        size_result.is_valid           = True
+        size_result.lot_size           = 0.01
+        size_result.stop_loss_distance = 0.001
+        size_result.rejection_reason   = ""
+
+        pos_sizer = MagicMock()
+        pos_sizer.calculate_lot_size.return_value = size_result
+
+        executor = MagicMock()
+        executor.get_open_positions.return_value = []
+        executor.open_position.return_value      = {"ticket": 99999}
+
+        orch = TradingOrchestrator(
+            data_pipeline     = pipeline,
+            risk_guard        = risk_guard,
+            pre_trade_check   = pre_trade,
+            signal_model      = signal_model,
+            correlation_guard = corr_guard,
+            position_sizer    = pos_sizer,
+            order_executor    = executor,
+            features_loader   = lambda sym: features,
+            balance_getter    = lambda: 10_000.0,
+            timeframe         = "H4",
+            mode              = TradingMode.CONFIRM_REQUIRED,
+        )
+        return orch, executor
+
+    # ── Einzelne Bestaetigung ─────────────────────────────────────────────
+
+    def test_single_confirmation_executes_order(self, long_signal_orchestrator):
+        """Einzelne Bestaetigung muss in ausgefuehrter Order resultieren."""
+        orch, executor = long_signal_orchestrator
+
+        cb = MagicMock()
+        cb.confirm_order.return_value = True
+        cb.last_confirmed_lot_size    = None
+        orch.set_confirmation_callback(cb)
+
+        result = orch.run_cycle("XAUUSD")
+
+        assert result["action"] == "open_buy", (
+            f"Erwartet 'open_buy', erhalten '{result['action']}'"
+        )
+        assert cb.confirm_order.call_count == 1
+        assert executor.open_position.call_count == 1
+
+    # ── Haupt-Regression: N aufeinanderfolgende Bestaetigungen ────────────
+
+    def test_bot_continues_after_multiple_confirmations(self, long_signal_orchestrator):
+        """
+        Kern-Regressionstest: N Bestaetigungen hintereinander muessen alle
+        durchlaufen – der Bot darf nach der ersten Bestaetigung NICHT einfrieren.
+        """
+        orch, executor = long_signal_orchestrator
+
+        confirm_count = [0]
+
+        class _CountingCallback:
+            last_confirmed_lot_size = None
+
+            def confirm_order(self, symbol, direction, lot_size, sl, tp):
+                confirm_count[0] += 1
+                self.last_confirmed_lot_size = lot_size
+                return True
+
+        orch.set_confirmation_callback(_CountingCallback())
+
+        N = 5
+        for i in range(N):
+            result = orch.run_cycle("XAUUSD")
+            assert result["action"] == "open_buy", (
+                f"Zyklus {i + 1}: Erwartet 'open_buy', erhalten '{result['action']}'. "
+                "Bot ist nach Bestaetigung inaktiv geworden! (Regression)"
+            )
+
+        assert confirm_count[0] == N, (
+            f"Erwartet {N} Bestaetigungen, erhalten {confirm_count[0]}"
+        )
+        assert executor.open_position.call_count == N
+
+    # ── Ablehnung gefolgt von Bestaetigung ────────────────────────────────
+
+    def test_rejection_does_not_break_subsequent_cycles(self, long_signal_orchestrator):
+        """
+        Abgelehnte Bestaetigung darf naechsten Zyklus nicht blockieren.
+        Zyklus 1: ablehnen  →  action='skipped'
+        Zyklus 2: bestaetigen →  action='open_buy'
+        """
+        orch, executor = long_signal_orchestrator
+
+        call_count = [0]
+
+        class _RejectThenConfirm:
+            last_confirmed_lot_size = None
+
+            def confirm_order(self, symbol, direction, lot_size, sl, tp):
+                call_count[0] += 1
+                self.last_confirmed_lot_size = lot_size
+                return call_count[0] > 1
+
+        orch.set_confirmation_callback(_RejectThenConfirm())
+
+        r1 = orch.run_cycle("XAUUSD")
+        r2 = orch.run_cycle("XAUUSD")
+
+        assert r1["action"] == "skipped", (
+            f"Zyklus 1 (Ablehnung): Erwartet 'skipped', erhalten '{r1['action']}'"
+        )
+        assert r1["reason"] == "order_not_confirmed"
+
+        assert r2["action"] == "open_buy", (
+            f"Zyklus 2 nach Ablehnung: Erwartet 'open_buy', erhalten '{r2['action']}'. "
+            "Bot ist nach Ablehnung inaktiv geworden! (Regression)"
+        )
+
+    # ── Threading: run_loop laeuft nach N Bestaetigungen weiter ──────────
+
+    def test_run_loop_continues_after_n_confirmations(self, long_signal_orchestrator):
+        """
+        run_loop() muss nach N Bestaetigungen weiter iterieren.
+        Testet die threading.Event-Korrektheit im vollstaendigen Loop.
+        """
+        import threading
+
+        orch, executor = long_signal_orchestrator
+
+        cycle_actions = []
+        target        = 3
+
+        class _AutoConfirm:
+            last_confirmed_lot_size = None
+
+            def confirm_order(self, symbol, direction, lot_size, sl, tp):
+                self.last_confirmed_lot_size = lot_size
+                return True
+
+        orch.set_confirmation_callback(_AutoConfirm())
+
+        def _on_activity(result):
+            cycle_actions.append(result["action"])
+            if len(cycle_actions) >= target:
+                orch.stop()
+
+        orch.set_activity_callback(_on_activity)
+
+        t = threading.Thread(
+            target=orch.run_loop,
+            args=(["XAUUSD"],),
+            kwargs={"interval_seconds": 0},
+        )
+        t.start()
+        t.join(timeout=5.0)
+
+        assert not t.is_alive(), (
+            "run_loop() hat sich nicht beendet – moeglicher Deadlock!"
+        )
+        assert len(cycle_actions) >= target, (
+            f"Erwartet mindestens {target} Zyklen, erhalten {len(cycle_actions)}. "
+            "Bot-Loop ist nach Bestaetigung eingefroren! (Regression)"
+        )
+        assert all(a == "open_buy" for a in cycle_actions[:target]), (
+            f"Nicht alle Zyklen resultierten in 'open_buy': {cycle_actions[:target]}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Integrations-Smoke: main() mit fehlenden Creds bricht fruehzeitig ab
 # ---------------------------------------------------------------------------
 
@@ -381,11 +837,11 @@ class TestMainEarlyExit:
         shutil.copy(tmp_config, tmp_path / "config" / "config.yaml")
 
         from scripts.run_gui_bot import main
-        rc = main(["--symbol", "EURUSD", "--config", "config/config.yaml"])
+        rc = main(["--config", "config/config.yaml"])
         assert rc == 1
 
     def test_main_exits_1_when_mt5_creds_missing(
-        self, tmp_path, monkeypatch, tmp_config, tmp_model
+        self, tmp_path, monkeypatch, tmp_config, tmp_model, tmp_mr_model
     ):
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("MT5_LOGIN",    raising=False)
@@ -395,9 +851,10 @@ class TestMainEarlyExit:
         (tmp_path / "models").mkdir()
         import shutil
         shutil.copy(tmp_model, tmp_path / "models" / tmp_model.name)
+        shutil.copy(tmp_mr_model, tmp_path / "models" / tmp_mr_model.name)
         (tmp_path / "config").mkdir()
         shutil.copy(tmp_config, tmp_path / "config" / "config.yaml")
 
         from scripts.run_gui_bot import main
-        rc = main(["--symbol", "EURUSD", "--config", "config/config.yaml"])
+        rc = main(["--config", "config/config.yaml"])
         assert rc == 1

@@ -292,3 +292,39 @@ Das 2-Wege H4-Portfolio übertrifft alle 3-Wege-Varianten im Median/Std (0.413 v
 - Der starke Ausreisser in Fenster 13 (Fed/BoJ-Divergenz 2022) ist im Backtest enthalten   und nicht reproduzierbar
 
 **Empfehlung:** Als ersten Live-Test empfiehlt sich die H4-Portfolio-Kombination (#3 XAUUSD TF + #4 EURUSD MR, 50/50), da dort die Korrelation exakt messbar und die Datengrundlage mit je 40 Fenstern robuster ist. USDJPY D1 kann als optionale dritte Komponente mit niedrigem Gewicht (15–25%) hinzugefügt werden, sobald Live-Daten über mindestens 12 Monate vorliegen.
+
+---
+
+## Demo-Live-Test: H4-Portfolio (XAUUSD TF + EURUSD MR)
+
+**Startdatum:** 2026-06-22  
+**Geplante Mindestlaufzeit:** 1 Woche (bis 2026-06-29)  
+**Modus:** CONFIRM_REQUIRED (Bestätigung per GUI-Banner vor jedem Trade)
+
+### Setup
+
+| Parameter | Wert |
+|-----------|------|
+| Symbol #1 | XAUUSD H4 – Trendfolge (SignalModel, Test #3) |
+| Symbol #2 | EURUSD H4 – Mean-Reversion (MeanReversionModel, Test #4) |
+| Risikoallokation | 50/50 (gleiche `risk_per_trade_pct` pro Symbol) |
+| Handelsmodus | CONFIRM_REQUIRED (Demo-Live, echte MT5-Demo-Positionen) |
+| Zyklusintervall | 300 s (5 min) pro Symbol sequenziell |
+| Infrastruktur | Gemeinsamer RiskGuard, PositionSizer, CorrelationGuard, AuditLog |
+
+### Ziel des Demo-Live-Tests
+
+- Entspricht das reale Signal-Verhalten dem Walk-Forward-Backtest?
+- Sind Spread-Kosten und Slippage auf dem Demo-Konto im akzeptablen Bereich?
+- Funktioniert die sequenzielle Parallelüberwachung beider Symbole stabil?
+- Verhält sich der EURUSD-MR-Features-Loader (Live-Ergänzung der 3 MR-Features) korrekt?
+
+### Protokollierung
+
+Alle Trades und Ereignisse werden protokolliert in:
+- `data/processed/audit.db` (AuditLog – vollständige Zyklusdaten)
+- `data/processed/paper_trades.json` (OrderExecutor – Trade-History)
+
+### Start-Anleitung
+
+Siehe Abschnitt *Startup-Anleitung* am Ende dieses Logs.
