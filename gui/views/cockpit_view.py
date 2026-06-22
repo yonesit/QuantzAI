@@ -327,6 +327,14 @@ class CockpitView(QWidget):
             try:
                 candles = self._backend.fetch_candles(symbol, tf, limit=200)
                 self._chart.set_candles(candles)
+                # Approximierte Bid/Ask aus letzter Kerze (ca. 1.5 Pips Spread)
+                if candles:
+                    last = candles[-1]
+                    approx_spread = 0.00015
+                    self._chart.set_bid_ask(
+                        last.close - approx_spread / 2,
+                        last.close + approx_spread / 2,
+                    )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -337,6 +345,14 @@ class CockpitView(QWidget):
                     self._active_sym, tf.label, limit=200
                 )
                 self._chart.set_candles(candles)
+                # Approximierte Bid/Ask aus letzter Kerze (ca. 1.5 Pips Spread)
+                if candles:
+                    last = candles[-1]
+                    approx_spread = 0.00015
+                    self._chart.set_bid_ask(
+                        last.close - approx_spread / 2,
+                        last.close + approx_spread / 2,
+                    )
             except Exception:  # noqa: BLE001
                 pass
 

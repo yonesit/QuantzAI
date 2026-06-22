@@ -56,6 +56,13 @@ class ColorTokens:
     accent_hover:  str = "#818cf8"
     accent_active: str = "#4f46e5"
 
+    # Chart-spezifische Farben (TradingView-Stil)
+    chart_bull:     str = "#26a69a"   # TradingView bullische Kerze
+    chart_bear:     str = "#ef5350"   # TradingView baerische Kerze
+    chart_buy_box:  str = "#1565c0"   # BUY-Preisbox
+    chart_sell_box: str = "#c62828"   # SELL-Preisbox / Crosshair-Label
+    chart_cross:    str = "#888888"   # Crosshair-Linien
+
 
 DARK = ColorTokens(
     bg_base="#0f0f11",
