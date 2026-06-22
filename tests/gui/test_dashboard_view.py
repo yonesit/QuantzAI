@@ -730,7 +730,7 @@ class TestMainWindowIntegration:
         tm = ThemeManager()
         w = MainWindow(theme_manager=tm)
         qtbot.addWidget(w)
-        assert w.content.count() == 6
+        assert w.content.count() == 7
         assert w.content.widget(0) is w.dashboard_view
 
     def test_navigate_to_dashboard_shows_view(self, qtbot: QtBot):

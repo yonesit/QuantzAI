@@ -98,8 +98,11 @@ class BotWorker(QObject):
                 interval_seconds=self._interval,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error("BotWorker: unbehandelte Exception: {e}", e=exc)
-            self.error_occurred.emit(str(exc))
+            import traceback as _tb
+            tb = _tb.format_exc()
+            logger.error("BotWorker: unbehandelte Exception:\n{tb}", tb=tb)
+            print(f"\n[BotWorker CRASH]\n{tb}", flush=True)
+            self.error_occurred.emit(f"{type(exc).__name__}: {exc}\n\n{tb}")
         finally:
             if hasattr(self._orchestrator, "set_activity_callback"):
                 self._orchestrator.set_activity_callback(None)
@@ -195,17 +198,28 @@ class BotControlsWidget(QWidget):
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         outer.addWidget(self._mode_combo)
 
-        # Buttons
+        # Icon-Buttons (36×36 px, Schriftgroesse 14 pt, Tooltip statt Text)
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
+        btn_row.setSpacing(6)
 
-        self._start_btn        = QPushButton("▶ Start")
-        self._stop_btn         = QPushButton("■ Stop")
-        self._pause_resume_btn = QPushButton("⏸ Pause")
+        self._start_btn        = QPushButton("▶")
+        self._stop_btn         = QPushButton("⏹")
+        self._pause_resume_btn = QPushButton("⏸")
 
         self._start_btn.setObjectName("bot_start_btn")
         self._stop_btn.setObjectName("bot_stop_btn")
         self._pause_resume_btn.setObjectName("bot_pause_resume_btn")
+
+        for btn, tip in (
+            (self._start_btn,        "Bot starten"),
+            (self._stop_btn,         "Bot stoppen"),
+            (self._pause_resume_btn, "Bot pausieren"),
+        ):
+            btn.setFixedSize(36, 36)
+            _f = btn.font()
+            _f.setPointSize(14)
+            btn.setFont(_f)
+            btn.setToolTip(tip)
 
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn.clicked.connect(self._on_stop)
@@ -214,6 +228,7 @@ class BotControlsWidget(QWidget):
         btn_row.addWidget(self._start_btn)
         btn_row.addWidget(self._stop_btn)
         btn_row.addWidget(self._pause_resume_btn)
+        btn_row.addStretch()
         outer.addLayout(btn_row)
 
     # ── Oeffentliche API ──────────────────────────────────────────────────────
@@ -407,9 +422,11 @@ class BotControlsWidget(QWidget):
         self._mode_combo.setEnabled(has_orc and not stopping)
 
         if paused:
-            self._pause_resume_btn.setText("▶ Weiter")
+            self._pause_resume_btn.setText("▶")
+            self._pause_resume_btn.setToolTip("Bot fortsetzen")
         else:
-            self._pause_resume_btn.setText("⏸ Pause")
+            self._pause_resume_btn.setText("⏸")
+            self._pause_resume_btn.setToolTip("Bot pausieren")
 
     def _reset_mode_combo(self) -> None:
         """Setzt Combo auf den aktuellen Orchestrator-Modus zurueck."""

@@ -178,7 +178,9 @@ class TradingOrchestrator:
         # ── Schritt 1: DataPipeline ───────────────────────────────────────────
         now   = datetime.now(timezone.utc)
         mins  = _TIMEFRAME_MINUTES.get(self._timeframe, 60)
-        start = now - timedelta(minutes=self._lookback * mins)
+        # Multiply by 1.5 to account for ~28 % non-trading time (weekends/holidays)
+        # so that MT5 actually returns at least `lookback_candles` H1 bars.
+        start = now - timedelta(minutes=int(self._lookback * mins * 1.5))
 
         logger.info("Zyklus | {sym} | Schritt 1: DataPipeline", sym=symbol)
         self._pipeline.run_batch(symbol, self._timeframe, start, now, force_refetch=True)
@@ -424,11 +426,16 @@ class TradingOrchestrator:
                     self.stop()
                     return
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("TradingOrchestrator: Unbehandelte Exception | {exc}", exc=exc)
+                    import traceback as _tb
+                    tb = _tb.format_exc()
+                    logger.error(
+                        "TradingOrchestrator: Unbehandelte Exception:\n{tb}", tb=tb
+                    )
+                    print(f"\n[Orchestrator CRASH in run_cycle({symbol})]\n{tb}", flush=True)
                     if self._emergency is not None:
                         self._emergency.handle_unhandled_exception(exc)
-                    else:
-                        raise
+                    # Loop continues to next interval – a single-cycle failure
+                    # must not terminate the bot thread.
 
             # Wartet auf Stopp-Signal oder timeout
             self._stop_event.wait(timeout=interval_seconds)

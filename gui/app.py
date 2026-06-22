@@ -71,6 +71,7 @@ class Section(Enum):
     JOURNAL   = ("Journal",        "📓", 3)
     BACKTEST  = ("Backtest",       "📈", 4)
     SETTINGS  = ("Einstellungen",  "⚙",  5)
+    LOG       = ("Aktivitätslog",  "📋", 6)
 
     def __init__(self, label: str, icon: str, index: int) -> None:
         self.label = label
@@ -252,6 +253,11 @@ class TradingStatusBar(QWidget):
         self._mode         = TradingMode.SUGGEST
         self._paused       = True
         self._account_info: Optional[dict] = None
+        # Bot-Label-Zustand unabhaengig vom _paused-Flag cachen, damit
+        # _refresh()-Aufrufe (durch Account-Polling etc.) das Label nicht
+        # ueberschreiben wenn update_bot_indicator() bereits gesetzt hat.
+        self._bot_text  = "⏹  Bot gestoppt"
+        self._bot_color = "#6b7280"
 
         self._build()
         self._refresh()
@@ -316,12 +322,10 @@ class TradingStatusBar(QWidget):
 
         self._mode_label.setText(f"Modus: {self._mode.value}")
 
-        if self._paused:
-            self._bot_label.setText("⏸  Bot pausiert")
-            self._bot_label.setStyleSheet("color: #f59e0b;")
-        else:
-            self._bot_label.setText("▶  Bot aktiv")
-            self._bot_label.setStyleSheet("color: #22c55e; font-weight: bold;")
+        # Bot-Label: gecachten Zustand verwenden (wird von update_bot_indicator gesetzt)
+        bold = "font-weight: bold;" if "aktiv" in self._bot_text.lower() else ""
+        self._bot_label.setText(self._bot_text)
+        self._bot_label.setStyleSheet(f"color: {self._bot_color}; {bold}")
 
     # ── Setter (sauber ohne direkten Widget-Zugriff von aussen) ──────────────
 
@@ -339,12 +343,17 @@ class TradingStatusBar(QWidget):
 
     def set_paused(self, paused: bool) -> None:
         self._paused = paused
-        self._refresh()
+        if paused:
+            self.update_bot_indicator("⏸  Bot pausiert", "#f59e0b")
+        else:
+            self.update_bot_indicator("▶  Bot aktiv", "#22c55e")
 
     def update_bot_indicator(self, text: str, color: str) -> None:
-        """Setzt Bot-Label und Farbe direkt (wird von BotControlsWidget benutzt)."""
-        self._bot_label.setText(text)
+        """Setzt Bot-Label und Farbe; cached den Zustand damit _refresh() ihn haelt."""
+        self._bot_text  = text
+        self._bot_color = color
         bold = "font-weight: bold;" if "aktiv" in text.lower() else ""
+        self._bot_label.setText(text)
         self._bot_label.setStyleSheet(f"color: {color}; {bold}")
 
     def set_watchdog_status(self, status: str) -> None:
@@ -583,18 +592,18 @@ class MainWindow(QMainWindow):
         self._views[Section.SETTINGS] = self._settings_view
         self._content.addWidget(self._settings_view)
 
-        # Content + Tab-Widget (ActivityLog + Konsole) als vertikaler Splitter
+        # Aktivitaetslog: eigener View in der Hauptnavigation
+        self._activity_log = ActivityLogWidget()
+        self._views[Section.LOG] = self._activity_log
+        self._content.addWidget(self._activity_log)
+
+        # Content + kleine Bot-Konsole (nur Entwickler-Tool) als vertikaler Splitter
         content_splitter = QSplitter(Qt.Orientation.Vertical)
         content_splitter.addWidget(self._content)
-
-        bottom_tabs = QTabWidget()
-        bottom_tabs.setObjectName("bottom_tabs")
-        self._activity_log  = ActivityLogWidget()
         self._console_widget = ConsoleWidget()
-        bottom_tabs.addTab(self._activity_log,  "Aktivitätslog")
-        bottom_tabs.addTab(self._console_widget, "Bot-Konsole")
-        content_splitter.addWidget(bottom_tabs)
-        content_splitter.setSizes([600, 200])
+        self._console_widget.setObjectName("bot_console")
+        content_splitter.addWidget(self._console_widget)
+        content_splitter.setSizes([720, 80])
         root.addWidget(content_splitter, stretch=1)
 
         # Bot-Steuerung unten in die Sidebar einhaengen

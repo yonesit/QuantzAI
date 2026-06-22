@@ -494,11 +494,12 @@ class TestGuiConfirmationCallbackReject:
         cb = GuiConfirmationCallback(timeout_seconds=5)
         t, _ = _call_confirm_in_thread(cb)
         qtbot.waitUntil(lambda: cb._banner is not None, timeout=3000)
-        with qtbot.waitSignal(cb._banner.rejected, timeout=2000):
-            qtbot.mouseClick(cb._banner._reject_btn, Qt.MouseButton.LeftButton)
+        banner = cb._banner  # Referenz sichern – _hide_banner() setzt cb._banner auf None
+        with qtbot.waitSignal(banner.rejected, timeout=2000):
+            qtbot.mouseClick(banner._reject_btn, Qt.MouseButton.LeftButton)
         t.join(timeout=3)
-        assert not cb._banner._confirm_btn.isEnabled()
-        assert not cb._banner._reject_btn.isEnabled()
+        assert not banner._confirm_btn.isEnabled()
+        assert not banner._reject_btn.isEnabled()
         cb.deleteLater()
 
 

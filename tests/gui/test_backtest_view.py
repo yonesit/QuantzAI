@@ -816,8 +816,8 @@ class TestMainWindowIntegration:
         w.navigate_to(Section.BACKTEST)
         assert w.content.currentWidget() is w.backtest_view
 
-    def test_stack_count_still_six(self, qtbot: QtBot, fresh_theme):
+    def test_stack_count_still_seven(self, qtbot: QtBot, fresh_theme):
         from gui.app import MainWindow
         w = MainWindow(theme_manager=fresh_theme)
         qtbot.addWidget(w)
-        assert w.content.count() == 6
+        assert w.content.count() == 7

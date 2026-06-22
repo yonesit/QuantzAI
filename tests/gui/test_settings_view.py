@@ -1000,10 +1000,10 @@ class TestMainWindowIntegration:
         )
         assert found
 
-    def test_content_count_is_6(self, qtbot, fresh_theme):
+    def test_content_count_is_7(self, qtbot, fresh_theme):
         mw = MainWindow(theme_manager=fresh_theme)
         qtbot.addWidget(mw)
-        assert mw.content.count() == 6
+        assert mw.content.count() == 7
 
     def test_navigate_to_settings(self, qtbot, fresh_theme):
         mw = MainWindow(theme_manager=fresh_theme)

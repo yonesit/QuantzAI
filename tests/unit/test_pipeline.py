@@ -110,8 +110,9 @@ class TestRunBatch:
         self, pipeline, mock_router, mock_validator, mock_feature_builder
     ):
         pipeline.run_batch("EURUSD", "H1", _dt(7), _dt(0))
-        mock_router.get_ohlcv.assert_called_once()
-        mock_validator.validate.assert_called_once()
+        # MTF-Pipeline ruft get_ohlcv und validate mehrfach auf (H1 + H4 + D1)
+        mock_router.get_ohlcv.assert_called()
+        mock_validator.validate.assert_called()
         mock_feature_builder.build.assert_called_once()
 
     def test_saves_quality_report(self, pipeline):
@@ -146,7 +147,8 @@ class TestRunBatch:
 
         result = pipeline.run_batch("EURUSD", "H1", start, end, force_refetch=True)
         assert result.get("skipped") is False
-        mock_router.get_ohlcv.assert_called_once()
+        # MTF-Pipeline ruft get_ohlcv mehrfach auf (H1 + H4 + D1)
+        mock_router.get_ohlcv.assert_called()
 
     def test_different_date_range_not_skipped(self, pipeline, mock_router):
         pipeline.run_batch("EURUSD", "H1", _dt(7), _dt(0))
@@ -154,7 +156,8 @@ class TestRunBatch:
 
         # Anderer Zeitraum -> anderer Hash -> kein Skip
         result = pipeline.run_batch("EURUSD", "H1", _dt(30), _dt(10))
-        mock_router.get_ohlcv.assert_called_once()
+        # MTF-Pipeline ruft get_ohlcv mehrfach auf (H1 + H4 + D1)
+        mock_router.get_ohlcv.assert_called()
 
 
 # ---------------------------------------------------------------------------

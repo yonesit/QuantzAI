@@ -726,8 +726,8 @@ class TestMainWindowRiskIntegration:
         qtbot.addWidget(win)
         return win
 
-    def test_still_has_six_views_in_stack(self, fresh_window):
-        assert fresh_window.content.count() == 6
+    def test_still_has_seven_views_in_stack(self, fresh_window):
+        assert fresh_window.content.count() == 7
 
     def test_risk_center_view_property_exists(self, fresh_window):
         view = fresh_window.risk_center_view

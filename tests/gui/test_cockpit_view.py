@@ -622,8 +622,8 @@ class TestMainWindowCockpitIntegration:
         main_window.navigate_to(Section.COCKPIT)
         assert main_window.current_view() is main_window.cockpit_view
 
-    def test_still_six_views_in_stack(self, main_window: MainWindow):
-        assert main_window.content.count() == 6
+    def test_still_seven_views_in_stack(self, main_window: MainWindow):
+        assert main_window.content.count() == 7
 
     def test_navigate_through_all_sections_no_crash(self, main_window: MainWindow):
         for section in Section:

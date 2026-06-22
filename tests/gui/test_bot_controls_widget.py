@@ -224,8 +224,8 @@ class TestBotControlsWidgetInit:
     def test_status_label_shows_stopped(self, widget: BotControlsWidget):
         assert widget._status_label.text() == BotState.STOPPED.value
 
-    def test_pause_resume_button_default_text(self, widget_with_orc: BotControlsWidget):
-        assert "Pause" in widget_with_orc._pause_resume_btn.text()
+    def test_pause_resume_button_default_icon(self, widget_with_orc: BotControlsWidget):
+        assert "⏸" in widget_with_orc._pause_resume_btn.text()
 
     def test_mode_combo_has_three_items(self, widget: BotControlsWidget):
         assert widget._mode_combo.count() == 3
@@ -364,13 +364,13 @@ class TestPauseResume:
         widget_with_orc._on_pause_resume()   # -> RUNNING
         widget_with_orc._orchestrator.resume.assert_called_once()
 
-    def test_pause_resume_btn_text_changes(self, qtbot: QtBot, widget_with_orc: BotControlsWidget):
+    def test_pause_resume_btn_icon_changes(self, qtbot: QtBot, widget_with_orc: BotControlsWidget):
         widget_with_orc._set_state(BotState.RUNNING)
-        assert "Pause" in widget_with_orc._pause_resume_btn.text()
+        assert "⏸" in widget_with_orc._pause_resume_btn.text()   # Pause-Icon
         widget_with_orc._on_pause_resume()
-        assert "Weiter" in widget_with_orc._pause_resume_btn.text()
+        assert "▶" in widget_with_orc._pause_resume_btn.text()   # Resume-Icon
         widget_with_orc._on_pause_resume()
-        assert "Pause" in widget_with_orc._pause_resume_btn.text()
+        assert "⏸" in widget_with_orc._pause_resume_btn.text()   # wieder Pause-Icon
 
     def test_stop_btn_enabled_when_paused(self, qtbot: QtBot, widget_with_orc: BotControlsWidget):
         widget_with_orc._set_state(BotState.PAUSED)

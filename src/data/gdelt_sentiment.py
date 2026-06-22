@@ -3,8 +3,9 @@ src/data/gdelt_sentiment.py
 GDELT-basiertes historisches Sentiment fuer EUR/USD Backtesting.
 
 GDELTDownloader:
-  Laed GDELT 2.0 GKG-Dateien (15-Minuten-Intervall), filtert auf
+  Laedt GDELT 2.0 GKG-Dateien (15-Minuten-Intervall), filtert auf
   EUR/USD-relevante Themen, speichert als lokale Parquet-DB.
+  Resume-faehig: bereits geladene bucket_times werden uebersprungen.
 
 SentimentHistory:
   Liest die Parquet-DB und liefert eine look-ahead-sichere
@@ -15,6 +16,7 @@ SentimentHistory:
 from __future__ import annotations
 
 import io
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +50,9 @@ _FINANCIAL_DOMAINS: frozenset[str] = frozenset([
 _TONE_SCALE = 30.0
 
 _GDELT_GKG_URL = "http://data.gdeltproject.org/gdeltv2/{ts}.gkg.csv.zip"
+
+# Wie viele neue Buckets zwischen zwei Parquet-Schreibvorgaengen (Checkpoint)
+_CHECKPOINT_EVERY = 200
 
 
 # ── Hilfsfunktionen ──────────────────────────────────────────────────────────
@@ -90,7 +95,6 @@ def _iter_gdelt_timestamps(
     ts = ts.replace(minute=(ts.minute // 15) * 15)
     result: list[datetime] = []
     while ts < end:
-        # Nur Zeitpunkte bei denen minute % step == 0
         if ts.minute % step == 0:
             result.append(ts)
         ts += timedelta(minutes=15)
@@ -104,11 +108,15 @@ class GDELTDownloader:
     Laedt GDELT 2.0 GKG-Dateien und extrahiert EUR/USD-relevante
     (bucket_time, avg_tone, n_articles)-Zeilen.
 
+    Resume-faehig: Beim Neustart werden bereits in der Parquet-DB
+    vorhandene bucket_times uebersprungen. Alle _CHECKPOINT_EVERY
+    neuen Buckets wird ein Zwischenspeicher geschrieben.
+
     Parameters
     ----------
     data_dir      : Verzeichnis fuer die Parquet-DB (data/news/)
-    step_minutes  : Nur jede N-te 15-Minuten-Datei laden (60 = sttdlich,
-                    120 = zweistaendlich). Muss Vielfaches von 15 sein.
+    step_minutes  : Nur jede N-te 15-Minuten-Datei laden (60 = stuendlich).
+                    Muss Vielfaches von 15 sein.
     timeout       : HTTP-Timeout pro Datei in Sekunden
     """
 
@@ -139,21 +147,36 @@ class GDELTDownloader:
         Look-ahead-Sicherheit: bucket_time ist der GDELT-Datei-Zeitstempel,
         also der Zeitpunkt bis zu dem die Nachrichten veroeffentlicht wurden.
         Nachrichten aus bucket_time=T werden NICHT fuer H1-Bar bei T verwendet.
+
+        Resume: bereits vorhandene bucket_times in der Parquet-DB werden
+        uebersprungen; alle _CHECKPOINT_EVERY Buckets wird ein Checkpoint
+        geschrieben.
         """
         start = _to_utc(start)
         end   = _to_utc(end)
 
         timestamps = _iter_gdelt_timestamps(start, end, self._step_minutes)
-        rows: list[dict] = []
-        n_ok = n_empty = n_err = 0
+        existing   = self._load_existing_timestamps(symbol)
+        todo       = [ts for ts in timestamps if ts not in existing]
 
-        for ts in timestamps:
+        n_skipped = len(timestamps) - len(todo)
+        if n_skipped:
+            logger.info(
+                "GDELT resume | {skip} bereits geladen, {todo} verbleiben",
+                skip=n_skipped, todo=len(todo),
+            )
+
+        pending_rows: list[dict] = []
+        n_ok = n_empty = n_err = 0
+        t0 = time.monotonic()
+
+        for i, ts in enumerate(todo, 1):
             ts_str = ts.strftime("%Y%m%d%H%M%S")
             url = _GDELT_GKG_URL.format(ts=ts_str)
             try:
                 batch = self._fetch_and_filter(url, ts)
                 if batch:
-                    rows.extend(batch)
+                    pending_rows.extend(batch)
                     n_ok += 1
                 else:
                     n_empty += 1
@@ -161,28 +184,40 @@ class GDELTDownloader:
                 logger.debug("GDELT skip | {ts} | {exc}", ts=ts_str, exc=exc)
                 n_err += 1
 
+            # Fortschrittslog alle 100 Dateien
+            if i % 100 == 0 or i == len(todo):
+                elapsed = time.monotonic() - t0
+                rate = i / elapsed if elapsed > 0 else 0
+                eta_s = (len(todo) - i) / rate if rate > 0 else 0
+                eta_h = eta_s / 3600
+                logger.info(
+                    "GDELT progress | {i}/{n} ({pct:.0f}%) | ok={ok} err={err} | ETA {eta:.1f}h",
+                    i=i, n=len(todo), pct=100*i/len(todo),
+                    ok=n_ok, err=n_err, eta=eta_h,
+                )
+
+            # Zwischenspeicher (Checkpoint)
+            if pending_rows and (i % _CHECKPOINT_EVERY == 0 or i == len(todo)):
+                self._flush(pending_rows, symbol)
+                pending_rows = []
+
         logger.info(
-            "GDELT download done | ok={ok} empty={empty} err={err} | raw_rows={rows}",
-            ok=n_ok, empty=n_empty, err=n_err, rows=len(rows),
+            "GDELT download done | ok={ok} empty={empty} err={err}",
+            ok=n_ok, empty=n_empty, err=n_err,
         )
 
-        if not rows:
-            empty = pd.DataFrame(columns=["bucket_time", "avg_tone", "n_articles"])
-            return empty
-
-        raw = pd.DataFrame(rows)
-        agg = (
-            raw.groupby("bucket_time")
-            .agg(avg_tone=("tone", "mean"), n_articles=("tone", "count"))
-            .reset_index()
-        )
-        agg["bucket_time"] = pd.to_datetime(agg["bucket_time"], utc=True)
-        agg = agg.sort_values("bucket_time").reset_index(drop=True)
-
-        self._upsert_parquet(agg, symbol)
-        return agg
+        return self._read_parquet(symbol)
 
     # ── Interne Methoden ──────────────────────────────────────────
+
+    def _load_existing_timestamps(self, symbol: str) -> set[datetime]:
+        """Gibt die Menge aller bucket_times aus der lokalen Parquet-DB zurueck."""
+        path = self._data_dir / f"gdelt_{symbol}.parquet"
+        if not path.exists():
+            return set()
+        df = pd.read_parquet(path, columns=["bucket_time"])
+        df["bucket_time"] = pd.to_datetime(df["bucket_time"], utc=True)
+        return set(df["bucket_time"].dt.to_pydatetime())
 
     def _fetch_and_filter(
         self, url: str, bucket_time: datetime
@@ -220,6 +255,39 @@ class GDELTDownloader:
             rows.append({"bucket_time": bucket_time, "tone": tone})
 
         return rows
+
+    def _flush(self, rows: list[dict], symbol: str) -> None:
+        """Aggregiert rows und schreibt sie in die Parquet-DB (Upsert)."""
+        raw = pd.DataFrame(rows)
+        agg = (
+            raw.groupby("bucket_time")
+            .agg(avg_tone=("tone", "mean"), n_articles=("tone", "count"))
+            .reset_index()
+        )
+        agg["bucket_time"] = pd.to_datetime(agg["bucket_time"], utc=True)
+        self._upsert_parquet(agg, symbol)
+
+    def _upsert_parquet(self, new_df: pd.DataFrame, symbol: str) -> None:
+        """Fuegt new_df in die bestehende Parquet-DB ein (keine Duplikate)."""
+        path = self._data_dir / f"gdelt_{symbol}.parquet"
+        if path.exists():
+            existing = pd.read_parquet(path)
+            existing["bucket_time"] = pd.to_datetime(existing["bucket_time"], utc=True)
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=["bucket_time"], keep="last")
+        else:
+            combined = new_df
+        combined = combined.sort_values("bucket_time").reset_index(drop=True)
+        combined.to_parquet(path, index=False)
+        logger.info("GDELT checkpoint | {path} | {n} rows total", path=path, n=len(combined))
+
+    def _read_parquet(self, symbol: str) -> pd.DataFrame:
+        path = self._data_dir / f"gdelt_{symbol}.parquet"
+        if not path.exists():
+            return pd.DataFrame(columns=["bucket_time", "avg_tone", "n_articles"])
+        df = pd.read_parquet(path)
+        df["bucket_time"] = pd.to_datetime(df["bucket_time"], utc=True)
+        return df.sort_values("bucket_time").reset_index(drop=True)
 
     def _upsert_parquet(self, new_df: pd.DataFrame, symbol: str) -> None:
         """Fuegt new_df in die bestehende Parquet-DB ein (keine Duplikate)."""

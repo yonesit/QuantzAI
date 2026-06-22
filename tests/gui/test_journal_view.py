@@ -886,8 +886,8 @@ class TestMainWindowJournalIntegration:
         qtbot.addWidget(win)
         return win
 
-    def test_still_has_six_views_in_stack(self, fresh_window):
-        assert fresh_window.content.count() == 6
+    def test_still_has_seven_views_in_stack(self, fresh_window):
+        assert fresh_window.content.count() == 7
 
     def test_journal_view_property_exists(self, fresh_window):
         assert isinstance(fresh_window.journal_view, JournalView)

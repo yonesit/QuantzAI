@@ -834,13 +834,12 @@ class ChartWidget(QWidget):
         tb.setContentsMargins(8, 4, 8, 4)
         tb.setSpacing(4)
 
-        # Zeitebenen-Buttons
+        # Zeitebenen-Buttons (auto-sized: width from font metrics + padding)
         for tf in Timeframe:
             btn = QPushButton(tf.label)
             btn.setObjectName(f"tf_btn_{tf.name.lower()}")
             btn.setCheckable(True)
-            btn.setMaximumWidth(42)
-            btn.setMinimumWidth(32)
+            btn.setToolTip(f"Zeitrahmen: {tf.label}")
             btn.clicked.connect(lambda _c, t=tf: self._on_tf_clicked(t))
             self._tf_buttons[tf] = btn
             tb.addWidget(btn)
@@ -885,8 +884,7 @@ class ChartWidget(QWidget):
             btn = QPushButton(label)
             btn.setObjectName(f"period_btn_{label.lower()}")
             btn.setCheckable(True)
-            btn.setMaximumWidth(42)
-            btn.setMinimumWidth(32)
+            btn.setToolTip(f"Anzeigezeitraum: {label}")
             btn.clicked.connect(lambda _c, lbl=label: self.set_display_period(lbl))
             self._period_buttons[label] = btn
             pb.addWidget(btn)

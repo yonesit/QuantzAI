@@ -412,15 +412,25 @@ class GuiConfirmationCallback(QObject):
         self._last_lot[0] = lot_size
         if self._event is not None:
             self._event.set()
+        self._hide_banner()
 
     @Slot()
     def _on_rejected(self) -> None:
         self._result[0] = False
         if self._event is not None:
             self._event.set()
+        self._hide_banner()
 
     @Slot()
     def _on_timed_out(self) -> None:
         self._result[0] = False
         if self._event is not None:
             self._event.set()
+        self._hide_banner()
+
+    def _hide_banner(self) -> None:
+        """Blendet das Banner aus und gibt Speicher frei."""
+        if self._banner is not None:
+            self._banner.hide()
+            self._banner.deleteLater()
+            self._banner = None

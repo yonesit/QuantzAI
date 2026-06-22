@@ -563,12 +563,22 @@ class TestOptionalComponents:
         result = orch.run_cycle("EURUSD")
         assert result["action"] == "open_buy"
 
-    def test_no_emergency_handler_reraises(self):
-        orch, mocks = _make_orch(emergency=False)
-        orch.run_cycle = MagicMock(side_effect=RuntimeError("fatal"))
+    def test_no_emergency_handler_loop_continues(self):
+        """Ohne EmergencyHandler darf run_loop() niemals re-raisen – der Loop muss weiterlaufen."""
+        orch, _mocks = _make_orch(emergency=False)
+        call_count = {"n": 0}
 
-        with pytest.raises(RuntimeError, match="fatal"):
-            orch.run_loop(["EURUSD"], interval_seconds=0)
+        def _fail_then_stop(sym):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                raise RuntimeError("transient error")
+            orch.stop()
+            return {}
+
+        orch.run_cycle = _fail_then_stop
+        # Must NOT raise – loop continues after exceptions
+        orch.run_loop(["EURUSD"], interval_seconds=0)
+        assert call_count["n"] >= 3  # loop continued past the failures
 
     def test_default_balance_used_when_no_getter(self):
         orch, mocks = _make_orch()

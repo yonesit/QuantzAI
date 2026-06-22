@@ -15,14 +15,14 @@ Gepruefte Bereiche:
     - Label-Inhalte spiegeln Zustand wider
 
   NavigationSidebar
-    - Alle 6 Sektionen vorhanden
+    - Alle 7 Sektionen vorhanden (inkl. Aktivitaetslog)
     - Dashboard ist Standard
     - navigate_to aendert current_section
     - section_changed Signal wird emittiert
 
   MainWindow
     - Erstellt ohne Absturz
-    - 6 Views im StackedWidget
+    - 7 Views im StackedWidget (inkl. Aktivitaetslog)
     - Navigate-To wechselt aktuellen View
     - Mindestgroesse >= 1366x768
     - Statusleiste zugaenglich
@@ -280,8 +280,8 @@ class TestNavigationSidebar:
         sidebar.navigate_to(Section.DASHBOARD)  # bereits Dashboard
         assert len(signals_received) == 0
 
-    def test_six_sections_exist(self):
-        assert len(list(Section)) == 6
+    def test_seven_sections_exist(self):
+        assert len(list(Section)) == 7
 
     def test_all_section_labels_nonempty(self):
         for section in Section:
@@ -305,8 +305,8 @@ class TestMainWindow:
     def test_minimum_height_at_least_768(self, main_window: MainWindow):
         assert main_window.minimumHeight() >= 768
 
-    def test_has_six_views_in_stack(self, main_window: MainWindow):
-        assert main_window.content.count() == 6
+    def test_has_seven_views_in_stack(self, main_window: MainWindow):
+        assert main_window.content.count() == 7
 
     def test_default_view_is_dashboard(self, main_window: MainWindow):
         assert main_window.sidebar.current_section is Section.DASHBOARD
