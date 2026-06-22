@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QTableWidget,
@@ -40,6 +41,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from gui.widgets.chart_widget import CandleData, ChartWidget, Timeframe
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -476,10 +479,14 @@ class _RiskTrafficLight(QFrame):
 #  Widget: Offene Positionen
 # ─────────────────────────────────────────────────────────────────────────────
 
-_POS_HEADERS = ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L"]
+_POS_HEADERS = ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L", ""]
+
+_COL_CLOSE = len(_POS_HEADERS) - 1   # index of the close-button column
 
 
 class _PositionsTable(QFrame):
+    close_requested = Signal(int)  # ticket
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("dashboard_card")
@@ -495,9 +502,12 @@ class _PositionsTable(QFrame):
         self._table.setObjectName("positions_table")
         self._table.setHorizontalHeaderLabels(_POS_HEADERS)
         hdr = self._table.horizontalHeader()
-        for col in range(len(_POS_HEADERS) - 1):
+        # Symbol–Eröffnung: auto-size; P&L: stretch; close button: fixed 90px
+        for col in range(_COL_CLOSE - 1):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(len(_POS_HEADERS) - 1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(_COL_CLOSE - 1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(_COL_CLOSE, QHeaderView.ResizeMode.Fixed)
+        self._table.setColumnWidth(_COL_CLOSE, 90)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
@@ -529,12 +539,24 @@ class _PositionsTable(QFrame):
                     item.setForeground(QColor(color))
                 self._table.setItem(row, col, item)
 
+            # Close button
+            ticket = pos.ticket
+            btn = QPushButton("Schließen")
+            btn.setStyleSheet(
+                "QPushButton { background:#ef4444; color:white; font-size:11px;"
+                " border-radius:3px; padding:2px 6px; }"
+                "QPushButton:hover { background:#dc2626; }"
+            )
+            btn.clicked.connect(lambda _checked=False, t=ticket: self.close_requested.emit(t))
+            self._table.setCellWidget(row, _COL_CLOSE, btn)
+
     def add_position(self, pos: dict) -> None:
         """Fuegt eine Position sofort ein und hebt sie kurz visuell hervor."""
         row = self._table.rowCount()
         self._table.insertRow(row)
 
         open_price = pos.get("open_price") or 0.0
+        ticket = pos.get("ticket")
         cells = [
             pos.get("symbol", ""),
             (pos.get("direction", "")).upper(),
@@ -546,8 +568,17 @@ class _PositionsTable(QFrame):
             item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if col == 0:
-                item.setData(Qt.ItemDataRole.UserRole, pos.get("ticket"))
+                item.setData(Qt.ItemDataRole.UserRole, ticket)
             self._table.setItem(row, col, item)
+
+        btn = QPushButton("Schließen")
+        btn.setStyleSheet(
+            "QPushButton { background:#ef4444; color:white; font-size:11px;"
+            " border-radius:3px; padding:2px 6px; }"
+            "QPushButton:hover { background:#dc2626; }"
+        )
+        btn.clicked.connect(lambda _checked=False, t=ticket: self.close_requested.emit(t))
+        self._table.setCellWidget(row, _COL_CLOSE, btn)
 
         self._highlight_row(row)
 
@@ -776,9 +807,10 @@ class DashboardView(QScrollArea):
       - Kontostand mit Tagesveraenderung
       - Drawdown-Gauge mit konfigurierbarer Warnschwelle
       - Risiko-Ampel (gruen/gelb/rot)
-      - Offene Positionen mit Live-P&L
+      - Offene Positionen mit Live-P&L und Schließen-Button
       - Heutige Statistiken aus TradeJournal
       - Aktuelle Signale aus SignalModel
+      - Candlestick-Chart fuer Marktbeobachtung
 
     Parameters
     ----------
@@ -790,6 +822,9 @@ class DashboardView(QScrollArea):
 
     # Signal wenn Daten abgerufen wurden (fuer Tests und UI-Updates)
     data_refreshed = Signal(DashboardSnapshot)
+
+    # Emittiert wenn Nutzer eine Position schliessen will (ticket)
+    position_close_requested = Signal(int)
 
     def __init__(
         self,
@@ -807,9 +842,21 @@ class DashboardView(QScrollArea):
         self._interval_ms = interval_ms
         self._last_snap   = DashboardSnapshot()  # Initialzustand
 
+        # Chart-Zustand
+        self._chart_connector = None
+        self._chart_symbol: str = "EURUSD"
+        self._chart_tf: Timeframe = Timeframe.H1
+
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_timer)
+
+        # Separater Timer fuer Chart-Refresh (60 s)
+        self._chart_timer = QTimer(self)
+        self._chart_timer.timeout.connect(self._refresh_chart)
+
+        # Positions-Close-Signal hochbubbling
+        self._positions.close_requested.connect(self.position_close_requested)
 
         # Initialen Zustand anzeigen
         self._apply_snapshot(self._last_snap)
@@ -846,6 +893,19 @@ class DashboardView(QScrollArea):
         # ── Offene Positionen ────────────────────────────────────────────────
         self._positions = _PositionsTable()
         root.addWidget(self._positions)
+
+        # ── Markt-Chart ──────────────────────────────────────────────────────
+        chart_card = _card()
+        chart_lay = QVBoxLayout(chart_card)
+        chart_lay.setContentsMargins(16, 12, 16, 14)
+        chart_lay.setSpacing(6)
+        chart_lay.addWidget(_title_label("Markt-Chart"))
+        self._chart = ChartWidget()
+        self._chart.setMinimumHeight(280)
+        self._chart.set_symbol(self._chart_symbol)
+        self._chart.timeframe_changed.connect(self._on_chart_tf_changed)
+        chart_lay.addWidget(self._chart)
+        root.addWidget(chart_card)
 
         # ── Signal-Panel ─────────────────────────────────────────────────────
         self._signals = _SignalPanel()
@@ -932,6 +992,56 @@ class DashboardView(QScrollArea):
     @property
     def last_snapshot(self) -> DashboardSnapshot:
         return self._last_snap
+
+    def set_chart_connector(self, connector, symbol: str) -> None:
+        """
+        Verbindet den MT5Connector fuer Chart-Daten.
+        Startet automatischen Chart-Refresh (60 s).
+        """
+        self._chart_connector = connector
+        self._chart_symbol = symbol
+        self._chart.set_symbol(symbol)
+        self._refresh_chart()
+        if not self._chart_timer.isActive():
+            self._chart_timer.start(60_000)
+
+    @Slot()
+    def _refresh_chart(self) -> None:
+        """Holt Candles vom Connector und aktualisiert den Chart."""
+        if self._chart_connector is None:
+            return
+        from datetime import timezone as _tz
+        try:
+            tf_str = self._chart_tf.label
+            df = self._chart_connector.get_ohlcv_count(
+                self._chart_symbol, tf_str, count=200
+            )
+            candles = []
+            for ts, row in df.iterrows():
+                ts_py = ts.to_pydatetime()
+                if ts_py.tzinfo is None:
+                    ts_py = ts_py.replace(tzinfo=_tz.utc)
+                candles.append(CandleData(
+                    timestamp=ts_py,
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=float(row.get("volume", 0.0)),
+                ))
+            self._chart.set_candles(candles)
+            # Bid/Ask aus letzter Kerze approximieren (~1.5 Pip Spread fuer Majors)
+            if candles:
+                mid = candles[-1].close
+                self._chart.set_bid_ask(mid - 0.000075, mid + 0.000075)
+        except Exception as exc:  # noqa: BLE001
+            from loguru import logger
+            logger.warning("Chart-Refresh fehlgeschlagen: {exc}", exc=exc)
+
+    @Slot(object)
+    def _on_chart_tf_changed(self, tf: Timeframe) -> None:
+        self._chart_tf = tf
+        self._refresh_chart()
 
     def connect_order_executor(self, relay) -> None:
         """

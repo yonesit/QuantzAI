@@ -522,21 +522,20 @@ class TestPositionsTable:
         assert pnl_item is not None
         assert "-" in pnl_item.text()
 
-    def test_five_columns(self, qtbot: QtBot):
+    def test_six_columns(self, qtbot: QtBot):
         t = _PositionsTable()
         qtbot.addWidget(t)
-        assert t.table.columnCount() == 5
+        assert t.table.columnCount() == 6  # 5 data cols + Schliessen-Button col
 
     def test_header_labels_full_text(self, qtbot: QtBot):
         from PySide6.QtWidgets import QHeaderView
         t = _PositionsTable()
         qtbot.addWidget(t)
-        hdr = t.table.horizontalHeader()
         labels = [
             t.table.horizontalHeaderItem(i).text()
             for i in range(t.table.columnCount())
         ]
-        assert labels == ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L"]
+        assert labels == ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L", ""]
 
     def test_header_resize_mode_is_resize_to_contents(self, qtbot: QtBot):
         from PySide6.QtWidgets import QHeaderView
