@@ -161,3 +161,68 @@ verbessert die Situation nicht grundlegend. Nächster Hebel: andere Symbole, Tim
 
 **Vergleich mit EURUSD H1-Baseline:**
 EURUSD H1 Mean-Reversion wurde nicht separat getestet (kein Eintrag im Log, kein entsprechender Commit in der Git-History). Vergleich gegen EURUSD H1 Trendfolge-Baseline (Test 0a, Ø OOS-Sharpe -0.484, 39% profitable Fenster): MR H4 übertrifft die H1-TF-Baseline im Ø OOS-Sharpe (0.389 vs. -0.484) und übertrifft sie in der Profitablen-Quote (68% vs. 39%). Ein direkter H1-MR ↔ H4-MR Vergleich ist nicht moeglich – das Experiment #H1-MR fehlt.
+---
+
+## Gesamtauswertung: Alle 4 priorisierten Tests
+
+*Stand: 2026-06-22 – sortiert nach Median OOS-Sharpe (robust gegenüber Einzelausreißern)*
+
+| Rang | Test | Symbol | TF | Strategie | Ø OOS-Sharpe | Median OOS-Sharpe | Std OOS-Sharpe | Profitable Fenster | Trades | Urteil |
+|------|------|--------|----|-----------|-------------|-------------------|----------------|---------------------|--------|--------|
+| 1 | #2 | USDJPY | D1 | Trendfolge | 1.208 | 1.449 | 7.594 | 17/32 (53%) | 695 | Kandidat |
+| 2 | #4 | EURUSD | H4 | Mean-Reversion | 0.389 | 1.142 | 3.670 | 27/40 (68%) | 5,201 | Kandidat |
+| 3 | #3 | XAUUSD | H4 | Trendfolge | -0.036 | 0.191 | 3.678 | 22/40 (55%) | 5,159 | Kandidat |
+| 4 | #1 | USDJPY | H4 | Trendfolge | -0.671 | n/a¹ | 4.480 | 15/40 (38%) | 5,199 | Verworfen |
+
+*¹ Median wurde für Test #1 nicht separat erfasst (Einführung ab Test #2).*
+
+**Lesart:** Median OOS-Sharpe > 0 bedeutet: in mehr als 50% aller Monate war das Modell profitabel
+(der Median ist der 50%-Quantilswert des Sharpe-Verteilung). Er ist robuster als der Mittelwert,
+da er von extremen Einzelfenstern nicht verzerrt wird.
+
+---
+
+## Korrelationsanalyse der drei Kandidaten
+
+**Methode:** Pearson-Korrelation der fensterweisen OOS-Sharpe-Werte.
+Tests #3 und #4 (beide H4, gleiche Periode) sind fenstergenau ausgerichtet (40 Fenster identisch).
+Test #2 (D1, 32 Fenster) wird monatlich ausgerichtet auf den Überschneidungszeitraum.
+
+### Paarweise Korrelationen
+
+| Paar | Pearson r | Überlappende Fenster | Interpretation |
+|------|-----------|---------------------|----------------|
+| USDJPY D1 TF ↔ XAUUSD H4 TF (#2 vs. #3) | -0.056 | 32 Monate | nahezu unkorreliert |
+| USDJPY D1 TF ↔ EURUSD H4 MR (#2 vs. #4) | 0.048 | 32 Monate | nahezu unkorreliert |
+| XAUUSD H4 TF ↔ EURUSD H4 MR (#3 vs. #4) | 0.001 | 40 Fenster (exakt) | nahezu unkorreliert |
+
+### Gleichgerichtete Fenster (#3 und #4, n=40)
+
+- Beide positiv (profitabler Monat fuer beide): **16/40** (40%)
+- Beide negativ (Verlusmonat fuer beide): **7/40** (18%)
+- Divergent (einer positiv, einer negativ): **17/40** (42%)
+
+### Portfolio-Simulation: 50/50 Kombination von #3 und #4
+
+| Metrik | XAUUSD H4 TF (#3) | EURUSD H4 MR (#4) | 50/50 Portfolio |
+|--------|------------------|------------------|-----------------|
+| Ø OOS-Sharpe | -0.036 | 0.389 | 0.176 |
+| Median OOS-Sharpe | 0.191 | 1.142 | 0.875 |
+| Std OOS-Sharpe | 3.678 | 3.670 | **2.600** |
+| Profitable Fenster | 55% | 68% | 62% |
+
+### Interpretation
+
+Die Korrelation zwischen XAUUSD H4 TF und EURUSD H4 MR beträgt r=0.001 (nahezu unkorreliert). Das ist der theoretisch erwartete Effekt: Trendfolge und Mean-Reversion arbeiten nach entgegengesetzten Marktregime-Annahmen. In Trend-Monaten profitiert die TF-Strategie, während MR kämpft – und umgekehrt in Seitwärtsphasen. Diese niedrige Korrelation macht eine Kombination prinzipiell attraktiv.
+
+Das 50/50 Portfolio hat eine Std von 2.600 – deutlich unter dem Minimum der Einzelsysteme (3.670). Echter Diversifikationsnutzen: Risiko sinkt ohne entsprechenden Renditeverlust.
+
+**USDJPY D1 TF (Test #2) als dritte Komponente:** Die Korrelation mit XAUUSD H4 TF beträgt r=-0.056 (nahezu unkorreliert), mit EURUSD H4 MR r=0.048 (nahezu unkorreliert). Hinweis: Die monatliche Ausrichtung ist eine Näherung (D1- vs. H4-Fenster sind nicht identisch), die Werte sind daher weniger präzise als die #3/#4-Korrelation.
+
+**Kombinations-Empfehlung:**
+Vor einer echten Portfolio-Kombination müssen zwei weitere Fragen geklärt werden:
+1. Transaktionskosten und Spread auf allen drei Instrumenten (besonders USDJPY D1: nur 695 Trades,
+   wenig Signal-Frequenz; XAUUSD und EURUSD H4 mit ~5200 Trades deutlich aktiver).
+2. Kapital-Effizienz: USDJPY D1 bindet Overnight-Margin-Risiko; H4-Systeme sind kürzer exponiert.
+Wenn beide Punkte akzeptabel: Kombination von #3 (XAUUSD TF) + #4 (EURUSD MR) als erster Schritt empfohlen,
+da deren Korrelation direkt messbar und die Signal-Frequenz vergleichbar ist.
