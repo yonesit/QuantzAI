@@ -655,6 +655,13 @@ def build_portfolio_stack(
         except Exception:  # noqa: BLE001
             return 10_000.0
 
+    def _price_getter(symbol: str) -> "float | None":
+        try:
+            tick = connector.get_tick(symbol)
+            return (float(tick["bid"]) + float(tick["ask"])) / 2
+        except Exception:  # noqa: BLE001
+            return None
+
     confidence = model_cfg.get("confidence_threshold", 0.55)
 
     # ── XAUUSD H4 – Standard-Features-Loader (23 Baseline-Features) ───────
@@ -680,6 +687,7 @@ def build_portfolio_stack(
         features_dir=features_dir,
         features_loader=_xauusd_features_loader,
         balance_getter=_balance_getter,
+        price_getter=_price_getter,
         timeframe="H4",
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,
@@ -712,6 +720,7 @@ def build_portfolio_stack(
         features_dir=features_dir,
         features_loader=_eurusd_mr_features_loader,
         balance_getter=_balance_getter,
+        price_getter=_price_getter,
         timeframe="H4",
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,

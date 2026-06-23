@@ -92,6 +92,7 @@ class TradingOrchestrator:
         features_dir: str = "data/features",
         features_loader: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
         balance_getter: Optional[Callable[[], float]] = None,
+        price_getter: Optional[Callable[[str], Optional[float]]] = None,
         timeframe: str = "H1",
         lookback_candles: int = 300,
         signal_confidence_threshold: float = 0.55,
@@ -124,6 +125,7 @@ class TradingOrchestrator:
 
         self._features_loader        = features_loader or self._default_features_loader
         self._balance_getter         = balance_getter
+        self._price_getter           = price_getter
         self._confirmation_callback  = confirmation_callback
 
         self._stop_event         = threading.Event()
@@ -256,6 +258,22 @@ class TradingOrchestrator:
         balance     = self._balance_getter() if self._balance_getter else 10_000.0
         atr         = self._extract_value(features_row, self._atr_col,   0.001)
         close_price = self._extract_value(features_row, self._close_col, 1.0)
+
+        # Im Paper-Modus: aktuellen Tick-Preis statt veralteter Kerzenschlusskurs verwenden
+        if not getattr(self._executor, "_live", True) and self._price_getter is not None:
+            try:
+                tick_price = self._price_getter(symbol)
+                if tick_price:
+                    logger.info(
+                        "Zyklus | {sym} | Tick-Preis {tick:.5f} ersetzt Candle-Close {c:.5f}",
+                        sym=symbol, tick=tick_price, c=close_price,
+                    )
+                    close_price = tick_price
+            except Exception as _pg_exc:
+                logger.warning(
+                    "price_getter Fehler: {e} -> Candle-Close {c:.5f} wird verwendet",
+                    e=_pg_exc, c=close_price,
+                )
 
         size_result = self._position_sizer.calculate_lot_size(balance, atr, symbol)
         if not size_result.is_valid:
