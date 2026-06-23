@@ -66,12 +66,16 @@ class SignalInfo:
 @dataclass
 class PositionInfo:
     """Eine offene Position."""
-    ticket:      int | str
-    symbol:      str
-    direction:   str
-    lot_size:    float
-    open_price:  float | None = None
-    current_pnl: float | None = None
+    ticket:           int | str
+    symbol:           str
+    direction:        str
+    lot_size:         float
+    open_price:       float | None = None
+    current_pnl:      float | None = None
+    crv:              float | None = None
+    sl_price:         float | None = None
+    tp_price:         float | None = None
+    break_even_active: bool = False
 
 
 @dataclass
@@ -109,6 +113,10 @@ class DashboardSnapshot:
     today_trades:   int         = 0
     today_pnl:      float | None = None
     today_win_rate: float | None = None
+
+    # Gesamt-Statistiken (realisierte P&L aus paper_trades.json, seit Teststart)
+    total_gross_profit: float | None = None
+    total_gross_loss:   float | None = None
 
     # Signale (aus SignalModel)
     signals: list[SignalInfo] = field(default_factory=list)
@@ -522,9 +530,13 @@ class _PositionsTable(QFrame):
         for row, pos in enumerate(positions):
             pnl_text = _fmt_delta(pos.current_pnl, snap.currency)
 
+            direction_text = pos.direction.upper()
+            if pos.break_even_active:
+                direction_text += " [BE]"
+
             cells = [
                 pos.symbol,
-                pos.direction.upper(),
+                direction_text,
                 f"{pos.lot_size:.2f}",
                 f"{pos.open_price:.5f}" if pos.open_price is not None else "—",
                 pnl_text,
@@ -534,6 +546,12 @@ class _PositionsTable(QFrame):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, pos.ticket)
+                    if pos.crv is not None:
+                        sl_str = f"SL: {pos.sl_price:.5f}" if pos.sl_price is not None else ""
+                        tp_str = f"TP: {pos.tp_price:.5f}" if pos.tp_price is not None else ""
+                        item.setToolTip(
+                            f"CRV: {pos.crv:.1f} | {sl_str} | {tp_str}".strip(" |")
+                        )
                 if col == 4 and pos.current_pnl is not None:
                     color = _profit_color(pos.current_pnl)
                     item.setForeground(QColor(color))
@@ -681,6 +699,71 @@ class _DailyStatsCard(QFrame):
     @property
     def winrate_label(self) -> QLabel:
         return self._winrate_lbl
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Widget: Gesamt-Statistiken (realisierter P&L seit Teststart)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TotalStatsCard(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboard_card")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(6)
+
+        lay.addWidget(_title_label("Gesamt seit Teststart"))
+
+        row = QHBoxLayout()
+        row.setSpacing(24)
+
+        def _stat(label: str, obj_name: str, tooltip: str) -> QLabel:
+            col = QVBoxLayout()
+            lbl_title = QLabel(label)
+            lbl_title.setProperty("secondary", "true")
+            lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val = QLabel("--")
+            val.setObjectName(obj_name)
+            val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            val.setToolTip(tooltip)
+            f = val.font()
+            f.setPointSize(14)
+            f.setBold(True)
+            val.setFont(f)
+            col.addWidget(lbl_title)
+            col.addWidget(val)
+            row.addLayout(col)
+            return val
+
+        self._profit_lbl = _stat(
+            "Gesamt-Gewinn", "stat_total_profit",
+            "Summe aller realisierten Gewinne (geschlossene Positionen)",
+        )
+        self._loss_lbl = _stat(
+            "Gesamt-Verlust", "stat_total_loss",
+            "Summe aller realisierten Verluste (geschlossene Positionen)",
+        )
+        lay.addLayout(row)
+
+    def refresh(self, snap: DashboardSnapshot) -> None:
+        profit_text = _fmt_delta(snap.total_gross_profit, snap.currency)
+        self._profit_lbl.setText(profit_text)
+        self._profit_lbl.setStyleSheet(f"color: {_profit_color(snap.total_gross_profit)};")
+
+        loss_text = _fmt_delta(snap.total_gross_loss, snap.currency)
+        self._loss_lbl.setText(loss_text)
+        self._loss_lbl.setStyleSheet(f"color: {_profit_color(snap.total_gross_loss)};")
+
+    @property
+    def profit_label(self) -> QLabel:
+        return self._profit_lbl
+
+    @property
+    def loss_label(self) -> QLabel:
+        return self._loss_lbl
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -890,6 +973,10 @@ class DashboardView(QScrollArea):
         self._daily_stats = _DailyStatsCard()
         root.addWidget(self._daily_stats)
 
+        # ── Gesamt-Statistiken (realisierter P&L seit Teststart) ─────────────
+        self._total_stats = _TotalStatsCard()
+        root.addWidget(self._total_stats)
+
         # ── Offene Positionen ────────────────────────────────────────────────
         self._positions = _PositionsTable()
         root.addWidget(self._positions)
@@ -927,6 +1014,7 @@ class DashboardView(QScrollArea):
         self._drawdown.refresh(snap)
         self._risk_light.refresh(snap)
         self._daily_stats.refresh(snap)
+        self._total_stats.refresh(snap)
         self._positions.refresh(snap)
         self._signals.refresh(snap)
         self._updated_lbl.setText(f"Letzte Aktualisierung: {snap.updated_at[:19].replace('T', ' ')} UTC")
@@ -980,6 +1068,10 @@ class DashboardView(QScrollArea):
     @property
     def daily_stats(self) -> _DailyStatsCard:
         return self._daily_stats
+
+    @property
+    def total_stats(self) -> _TotalStatsCard:
+        return self._total_stats
 
     @property
     def positions_table(self) -> _PositionsTable:

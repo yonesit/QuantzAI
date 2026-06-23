@@ -241,10 +241,11 @@ class MultiSymbolOrchestrator:
     pairs : Liste von (symbol, TradingOrchestrator)-Tuples.
     """
 
-    def __init__(self, pairs: list) -> None:
+    def __init__(self, pairs: list, break_even_manager=None) -> None:
         self._pairs               = pairs          # [(symbol, orchestrator)]
         self._stop_event          = threading.Event()
         self._activity_callback   = None
+        self._be_manager          = break_even_manager
 
     # ── Oeffentliche Schnittstelle (wie TradingOrchestrator) ─────────────────
 
@@ -286,6 +287,14 @@ class MultiSymbolOrchestrator:
                         "Zyklus | {sym} | action={a} | reason={r}",
                         sym=symbol, a=result["action"], r=result["reason"],
                     )
+                    if self._be_manager is not None:
+                        try:
+                            self._be_manager.manage(symbol)
+                        except Exception as _be_exc:  # noqa: BLE001
+                            logger.warning(
+                                "BreakEvenManager Fehler | {sym}: {e}",
+                                sym=symbol, e=_be_exc,
+                            )
                 except KeyboardInterrupt:
                     logger.info("MultiSymbolOrchestrator: KeyboardInterrupt -> Shutdown")
                     self.stop()
@@ -692,10 +701,22 @@ def build_portfolio_stack(
         confirmation_callback=confirmation_callback,
     )
 
-    portfolio_orch = MultiSymbolOrchestrator([
-        ("XAUUSD", xauusd_orch),
-        ("EURUSD", eurusd_orch),
-    ])
+    from src.risk.break_even_manager import BreakEvenManager
+
+    be_manager = BreakEvenManager(
+        connector=connector,
+        order_executor=order_executor,
+        break_even_threshold=risk_cfg.get("break_even_threshold", 0.5),
+        spread_buffer_pips=risk_cfg.get("break_even_spread_buffer_pips", 2.0),
+    )
+
+    portfolio_orch = MultiSymbolOrchestrator(
+        pairs=[
+            ("XAUUSD", xauusd_orch),
+            ("EURUSD", eurusd_orch),
+        ],
+        break_even_manager=be_manager,
+    )
 
     logger.info(
         "Portfolio-Stack bereit | XAUUSD H4 TF + EURUSD H4 MR | "
@@ -714,8 +735,64 @@ def build_portfolio_stack(
 
 
 # ---------------------------------------------------------------------------
-# P&L-Berechnung (pure Funktion – testbar ohne MT5/Qt)
+# Hilfsfunktionen – pure, testbar ohne MT5/Qt
 # ---------------------------------------------------------------------------
+
+def _calc_crv(pos: dict) -> "float | None":
+    """
+    Berechnet das Chance-Risiko-Verhaeltnis (TP-Distanz / SL-Distanz).
+
+    Gibt None zurueck wenn SL/TP/open_price fehlen oder SL-Distanz <= 0.
+    """
+    direction  = pos.get("direction", "")
+    open_price = pos.get("open_price")
+    sl_price   = pos.get("sl_price")
+    tp_price   = pos.get("tp_price")
+    if not all([direction, open_price, sl_price, tp_price]):
+        return None
+    if direction == "buy":
+        tp_dist = tp_price - open_price
+        sl_dist = open_price - sl_price
+    else:
+        tp_dist = open_price - tp_price
+        sl_dist = sl_price - open_price
+    if sl_dist <= 0:
+        return None
+    return round(tp_dist / sl_dist, 1)
+
+
+def _calc_total_stats(
+    closed_trades: "list[dict]",
+) -> "tuple[float | None, float | None]":
+    """
+    Berechnet Gesamt-Gewinn und Gesamt-Verlust aus geschlossenen Paper-Trades.
+
+    Parameters
+    ----------
+    closed_trades : Liste aller Trade-Dicts (offen und geschlossen).
+
+    Returns
+    -------
+    (total_gross_profit, total_gross_loss)
+    Gibt (None, None) wenn noch kein Trade mit pnl-Feld geschlossen wurde.
+    Gibt (profit, None) wenn nur Gewinne vorhanden und umgekehrt.
+    """
+    profits = [
+        t["pnl"] for t in closed_trades
+        if t.get("status") == "closed"
+        and t.get("pnl") is not None
+        and t["pnl"] > 0
+    ]
+    losses = [
+        t["pnl"] for t in closed_trades
+        if t.get("status") == "closed"
+        and t.get("pnl") is not None
+        and t["pnl"] <= 0
+    ]
+    total_profit = sum(profits) if profits else None
+    total_loss   = sum(losses)  if losses  else None
+    return total_profit, total_loss
+
 
 def calc_unrealized_pnl(
     direction: str,
@@ -808,6 +885,8 @@ class _LiveDashboardBackend:
                     except Exception:  # noqa: BLE001
                         pass
 
+                crv = _calc_crv(p)
+
                 positions.append(PositionInfo(
                     ticket=p["ticket"],
                     symbol=sym,
@@ -815,7 +894,22 @@ class _LiveDashboardBackend:
                     lot_size=p["lot_size"],
                     open_price=op or None,
                     current_pnl=pnl,
+                    crv=crv,
+                    sl_price=p.get("sl_price"),
+                    tp_price=p.get("tp_price"),
+                    break_even_active=bool(p.get("break_even_triggered")),
                 ))
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Gesamt-Gewinn / Gesamt-Verlust aus paper_trades.json berechnen
+        total_profit: float | None = None
+        total_loss:   float | None = None
+        try:
+            all_trades = list(
+                getattr(self._executor, "_paper_positions", {}).values()
+            )
+            total_profit, total_loss = _calc_total_stats(all_trades)
         except Exception:  # noqa: BLE001
             pass
 
@@ -828,6 +922,8 @@ class _LiveDashboardBackend:
             leverage=info.get("leverage"),
             is_demo=info.get("is_demo"),
             positions=positions,
+            total_gross_profit=total_profit,
+            total_gross_loss=total_loss,
         )
 
 
@@ -978,10 +1074,39 @@ def main(argv=None) -> int:
     relay.order_opened.connect(window._paper_order_open_cb)
     relay.order_closed.connect(window.dashboard_view.on_order_closed)
 
-    # Position schließen per Dashboard-Button
+    # Position schließen per Dashboard-Button (inkl. close_price + pnl)
     def _close_position(ticket: int) -> None:
         try:
-            result = order_executor.close_position(ticket)
+            pos_list = [
+                p for p in order_executor.get_open_positions()
+                if p.get("ticket") == ticket
+            ]
+            close_price: float | None = None
+            realized_pnl: float | None = None
+            if pos_list:
+                pos = pos_list[0]
+                raw_sym   = pos.get("symbol", "")
+                direction = pos.get("direction", "")
+                op        = pos.get("open_price") or 0.0
+                lot_size  = pos.get("lot_size", 0.0)
+                if op and raw_sym:
+                    try:
+                        tick          = connector.get_tick(raw_sym)
+                        close_price   = tick["bid"] if direction == "buy" else tick["ask"]
+                        contract_size = live_backend._get_contract_size(raw_sym)
+                        realized_pnl  = calc_unrealized_pnl(
+                            direction=direction,
+                            open_price=op,
+                            current_bid=tick["bid"],
+                            current_ask=tick["ask"],
+                            lot_size=lot_size,
+                            contract_size=contract_size,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            result = order_executor.close_position(
+                ticket, close_price=close_price, pnl=realized_pnl
+            )
             logger.info("Position {t} geschlossen: {r}", t=ticket, r=result)
         except Exception as exc:  # noqa: BLE001
             logger.error("Position {t} schliessen fehlgeschlagen: {exc}", t=ticket, exc=exc)

@@ -158,13 +158,20 @@ class OrderExecutor:
 
         return self._open_live(symbol, direction, lot_size, sl_price, tp_price)
 
-    def close_position(self, ticket: int) -> dict:
+    def close_position(
+        self,
+        ticket: int,
+        close_price: Optional[float] = None,
+        pnl: Optional[float] = None,
+    ) -> dict:
         """
         Schliesst eine offene Position.
 
         Parameters
         ----------
-        ticket : MT5-Ticket-Nummer (oder Paper-Trading-Ticket).
+        ticket      : MT5-Ticket-Nummer (oder Paper-Trading-Ticket).
+        close_price : Optionaler Schlusskurs (wird im Paper-Trade gespeichert).
+        pnl         : Optionaler realisierter P&L (wird im Paper-Trade gespeichert).
 
         Returns
         -------
@@ -175,8 +182,41 @@ class OrderExecutor:
         OrderError wenn die Position nicht gefunden oder der Abschluss abgelehnt wird.
         """
         if not self._live:
-            return self._close_paper(ticket)
+            return self._close_paper(ticket, close_price=close_price, pnl=pnl)
         return self._close_live(ticket)
+
+    def set_stop_loss(self, ticket: int, new_sl_price: float) -> None:
+        """
+        Setzt den Stop-Loss einer offenen Paper-Position auf einen neuen Preis.
+
+        Nur im Paper-Modus. Live-Positionen werden nicht beruehrt.
+        """
+        if not self._live:
+            pos = self._paper_positions.get(ticket)
+            if pos and pos.get("status") == "open":
+                pos["sl_price"] = new_sl_price
+                self._write_paper_trades()
+                logger.info(
+                    "[PAPER] set_stop_loss | ticket={t} | SL -> {sl:.5f}",
+                    t=ticket, sl=new_sl_price,
+                )
+
+    def mark_break_even(self, ticket: int) -> None:
+        """
+        Markiert eine Paper-Position als 'Break-Even erreicht'.
+
+        Setzt break_even_triggered=True im Position-Dict und schreibt paper_trades.json.
+        Nur im Paper-Modus.
+        """
+        if not self._live:
+            pos = self._paper_positions.get(ticket)
+            if pos and pos.get("status") == "open":
+                pos["break_even_triggered"] = True
+                self._write_paper_trades()
+                logger.info(
+                    "[PAPER] mark_break_even | ticket={t} | BE aktiv",
+                    t=ticket,
+                )
 
     def update_trailing_stop(self, ticket: int, current_price: float) -> None:
         """
@@ -401,7 +441,12 @@ class OrderExecutor:
                 logger.warning("OrderExecutor: on_open_cb Fehler: {e}", e=exc)
         return order_result
 
-    def _close_paper(self, ticket: int) -> dict:
+    def _close_paper(
+        self,
+        ticket: int,
+        close_price: Optional[float] = None,
+        pnl: Optional[float] = None,
+    ) -> dict:
         pos = self._paper_positions.get(ticket)
         if pos is None:
             raise OrderError(
@@ -414,6 +459,8 @@ class OrderExecutor:
         now = datetime.now(timezone.utc).isoformat()
         pos["status"] = "closed"
         pos["close_time"] = now
+        pos["close_price"] = close_price
+        pos["pnl"] = pnl
         self._write_paper_trades()
 
         logger.info("[PAPER] close_position | ticket={t}", t=ticket)
