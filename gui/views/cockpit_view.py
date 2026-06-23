@@ -59,6 +59,8 @@ from PySide6.QtWidgets import (
 
 from gui.widgets.chart_widget import CandleData, ChartWidget, Timeframe
 from gui.widgets.watchlist_widget import WatchlistEntry, WatchlistWidget
+from datetime import datetime
+
 from gui.views.dashboard_view import (
     DashboardSnapshot,
     PositionInfo,
@@ -66,6 +68,17 @@ from gui.views.dashboard_view import (
     _profit_color,
     _title_label,
 )
+
+
+def _fmt_open_time(ts: str | None) -> str:
+    """ISO-Zeitstempel -> 'TT.MM. HH:MM' (UTC)."""
+    if not ts:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%d.%m. %H:%M")
+    except Exception:
+        return "—"
 
 # Symbole die immer in der Watchlist erscheinen
 WATCHLIST_SYMBOLS = ["XAUUSD", "EURUSD", "USDJPY", "GBPUSD"]
@@ -105,7 +118,7 @@ class CockpitBackend(Protocol):
 #  Widget: Offene Positionen
 # ─────────────────────────────────────────────────────────────────────────────
 
-_POS_HEADERS = ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L", ""]
+_POS_HEADERS = ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L", "Datum/Uhrzeit", ""]
 
 _COL_CLOSE = len(_POS_HEADERS) - 1
 
@@ -157,6 +170,7 @@ class _PositionsTable(QFrame):
                 f"{pos.lot_size:.2f}",
                 f"{pos.open_price:.5f}" if pos.open_price is not None else "—",
                 pnl_text,
+                _fmt_open_time(pos.open_time),
             ]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
@@ -195,6 +209,7 @@ class _PositionsTable(QFrame):
             f"{pos.get('lot_size', 0):.2f}",
             f"{open_price:.5f}",
             "–",
+            _fmt_open_time(pos.get("open_time")),
         ]
         for col, text in enumerate(cells):
             item = QTableWidgetItem(text)
@@ -729,6 +744,7 @@ class CockpitView(QWidget):
                 sl_price=p.get("sl_price"),
                 tp_price=p.get("tp_price"),
                 break_even_active=bool(p.get("break_even_active", False)),
+                open_time=p.get("open_time"),
             )
             for p in positions
         ]

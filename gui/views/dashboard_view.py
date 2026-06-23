@@ -71,6 +71,7 @@ class PositionInfo:
     sl_price:         float | None = None
     tp_price:         float | None = None
     break_even_active: bool = False
+    open_time:         str | None = None
 
 
 @dataclass

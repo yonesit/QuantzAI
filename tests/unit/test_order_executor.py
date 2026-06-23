@@ -794,3 +794,50 @@ class TestCheckPaperSLTP:
         conn.get_tick.return_value = {"bid": 1.1102, "ask": 1.1104}
         ex.check_paper_sl_tp()
         cb.assert_called_once()
+
+
+class TestMarkProfitLock70:
+
+    def test_sets_flag_on_open_position(self, tmp_path: Path):
+        conn = MagicMock()
+        ex = OrderExecutor(connector=conn, paper_trades_path=tmp_path / "t.json")
+        result = ex.open_position("EURUSD", "buy", 0.1, 1.07, 1.10)
+        ticket = result["ticket"]
+        ex.mark_profit_lock_70(ticket)
+        pos = ex._paper_positions[ticket]
+        assert pos["profit_lock_70_triggered"] is True
+
+    def test_persisted_to_json(self, tmp_path: Path):
+        import json
+        conn = MagicMock()
+        path = tmp_path / "t.json"
+        ex = OrderExecutor(connector=conn, paper_trades_path=path)
+        result = ex.open_position("EURUSD", "buy", 0.1, 1.07, 1.10)
+        ex.mark_profit_lock_70(result["ticket"])
+        data = json.loads(path.read_text())
+        assert data[0]["profit_lock_70_triggered"] is True
+
+    def test_noop_on_closed_position(self, tmp_path: Path):
+        conn = MagicMock()
+        conn.get_tick.return_value = {"bid": 1.10, "ask": 1.1002}
+        conn.get_symbol_info.return_value = {"contract_size": 100_000.0}
+        ex = OrderExecutor(connector=conn, paper_trades_path=tmp_path / "t.json")
+        result = ex.open_position("EURUSD", "buy", 0.1, 1.07, 1.12)
+        ticket = result["ticket"]
+        ex.close_position(ticket, close_price=1.10)
+        ex.mark_profit_lock_70(ticket)
+        pos = ex._paper_positions[ticket]
+        assert not pos.get("profit_lock_70_triggered")
+
+    def test_noop_in_live_mode(self, tmp_path: Path):
+        import os
+        from unittest.mock import patch, PropertyMock
+        conn = MagicMock()
+        type(conn).is_connected = PropertyMock(return_value=True)
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "yes"}):
+            ex = OrderExecutor(
+                connector=conn,
+                live_trading_enabled=True,
+                paper_trades_path=tmp_path / "t.json",
+            )
+        ex.mark_profit_lock_70(99)  # kein Crash, kein Effekt

@@ -20,7 +20,10 @@ sys.path.insert(0, str(_ROOT))
 from src.risk.break_even_manager import (
     BreakEvenManager,
     calc_break_even_sl,
+    calc_progress,
+    calc_profit_lock_70_sl,
     calc_realized_pnl,
+    calc_trailing_85_sl,
     is_sl_hit,
     is_tp_hit,
     should_trigger_break_even,
@@ -204,18 +207,20 @@ def _make_pos(
     tp_price=1.0900,
     lot_size=0.1,
     be_triggered=False,
+    lock_70_triggered=False,
     status="open",
 ):
     return {
-        "ticket":             ticket,
-        "symbol":             symbol,
-        "direction":          direction,
-        "open_price":         open_price,
-        "sl_price":           sl_price,
-        "tp_price":           tp_price,
-        "lot_size":           lot_size,
-        "break_even_triggered": be_triggered,
-        "status":             status,
+        "ticket":                   ticket,
+        "symbol":                   symbol,
+        "direction":                direction,
+        "open_price":               open_price,
+        "sl_price":                 sl_price,
+        "tp_price":                 tp_price,
+        "lot_size":                 lot_size,
+        "break_even_triggered":     be_triggered,
+        "profit_lock_70_triggered": lock_70_triggered,
+        "status":                   status,
     }
 
 
@@ -311,23 +316,53 @@ class TestBreakEvenManagerManage:
         mock_executor.set_stop_loss.assert_not_called()
         mock_executor.mark_break_even.assert_not_called()
 
-    def test_trailing_stop_called_after_break_even(self, mock_connector, mock_executor):
-        """Wenn BE bereits aktiv ist → Trailing-Stop aufrufen (nicht erneut BE)."""
-        pos = _make_pos(
-            open_price=1.0800, sl_price=1.0802, tp_price=1.0900,
-            be_triggered=True,
-        )
+    def test_profit_lock_70_triggered_at_70pct(self, mock_connector, mock_executor):
+        """BE aktiv + Preis bei 72% → SL auf +33% TP-Distanz sichern."""
+        # open=1.0800, tp=1.0900 (100 Pips), bid=1.0872 → 72% (>70%)
+        pos = _make_pos(open_price=1.0800, sl_price=1.0802, tp_price=1.0900, be_triggered=True)
         mock_executor.get_open_positions.return_value = [pos]
-        mock_connector.get_tick.return_value = {"bid": 1.0870, "ask": 1.0872}
+        mock_connector.get_tick.return_value = {"bid": 1.0872, "ask": 1.0874}
 
         mgr = BreakEvenManager(mock_connector, mock_executor)
         actions = mgr.manage("EURUSD")
 
         assert len(actions) == 1
-        assert actions[0]["action"] == "trailing"
-        mock_executor.update_trailing_stop.assert_called_once_with(1, 1.0870)
+        assert actions[0]["action"] == "profit_lock_70"
+        mock_executor.mark_profit_lock_70.assert_called_once_with(1)
+        # SL muss auf open + 33% * tp_dist = 1.0800 + 0.33 * 0.0100 = 1.0833 liegen
+        sl_arg = mock_executor.set_stop_loss.call_args[0][1]
+        assert abs(sl_arg - 1.0833) < 0.0001
+
+    def test_trailing_85_called_at_85pct(self, mock_connector, mock_executor):
+        """BE + lock_70 aktiv + Preis bei ≥85% → 85%-Trailing setzen."""
+        # open=1.0800, tp=1.0900 (100 Pips), bid=1.0890 → 90%
+        pos = _make_pos(
+            open_price=1.0800, sl_price=1.0833, tp_price=1.0900,
+            be_triggered=True, lock_70_triggered=True,
+        )
+        mock_executor.get_open_positions.return_value = [pos]
+        mock_connector.get_tick.return_value = {"bid": 1.0890, "ask": 1.0892}
+
+        mgr = BreakEvenManager(mock_connector, mock_executor)
+        actions = mgr.manage("EURUSD")
+
+        assert len(actions) == 1
+        assert actions[0]["action"] == "trailing_85"
+        # SL = bid - 20% * tp_dist = 1.0890 - 0.0020 = 1.0870
+        sl_arg = mock_executor.set_stop_loss.call_args[0][1]
+        assert abs(sl_arg - 1.0870) < 0.0001
+
+    def test_no_action_when_be_active_and_below_70pct(self, mock_connector, mock_executor):
+        """BE aktiv, aber Preis <70% → kein weiterer Eingriff."""
+        pos = _make_pos(open_price=1.0800, sl_price=1.0802, tp_price=1.0900, be_triggered=True)
+        mock_executor.get_open_positions.return_value = [pos]
+        mock_connector.get_tick.return_value = {"bid": 1.0860, "ask": 1.0862}  # 60%
+
+        mgr = BreakEvenManager(mock_connector, mock_executor)
+        actions = mgr.manage("EURUSD")
+
+        assert actions == []
         mock_executor.set_stop_loss.assert_not_called()
-        mock_executor.mark_break_even.assert_not_called()
 
     def test_break_even_sl_not_moved_if_worse(self, mock_connector, mock_executor):
         """BE-SL soll nur gesetzt werden wenn er den SL verbessert (nicht verschlechtert)."""
@@ -571,3 +606,78 @@ class TestCalcTotalStats:
         profit, loss = _calc_total_stats(trades)
         assert abs(profit - 75.0) < 0.001
         assert loss is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  calc_progress (neue Pure-Funktion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCalcProgress:
+
+    def test_buy_50pct(self):
+        assert abs(calc_progress("buy", 1.0800, 1.0900, 1.0850) - 0.5) < 1e-9
+
+    def test_buy_70pct(self):
+        assert abs(calc_progress("buy", 1.0800, 1.0900, 1.0870) - 0.7) < 1e-9
+
+    def test_buy_85pct(self):
+        assert abs(calc_progress("buy", 1.0800, 1.0900, 1.0885) - 0.85) < 1e-9
+
+    def test_buy_zero_dist_returns_zero(self):
+        assert calc_progress("buy", 1.0800, 1.0800, 1.0800) == 0.0
+
+    def test_sell_50pct(self):
+        assert abs(calc_progress("sell", 1.0900, 1.0800, 1.0850) - 0.5) < 1e-9
+
+    def test_sell_85pct(self):
+        assert abs(calc_progress("sell", 1.0900, 1.0800, 1.0815) - 0.85) < 1e-9
+
+    def test_sell_zero_dist_returns_zero(self):
+        assert calc_progress("sell", 1.0900, 1.0900, 1.0900) == 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  calc_profit_lock_70_sl (neue Pure-Funktion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCalcProfitLock70Sl:
+
+    def test_buy_sl_at_33pct_tp_dist(self):
+        # open=1.0800, tp=1.0900 → tp_dist=0.0100 → SL = 1.0800 + 0.0033 = 1.0833
+        sl = calc_profit_lock_70_sl("buy", 1.0800, 1.0900)
+        assert abs(sl - 1.0833) < 1e-5
+
+    def test_sell_sl_at_33pct_tp_dist(self):
+        # open=1.0900, tp=1.0800 → tp_dist=0.0100 → SL = 1.0900 - 0.0033 = 1.0867
+        sl = calc_profit_lock_70_sl("sell", 1.0900, 1.0800)
+        assert abs(sl - 1.0867) < 1e-5
+
+    def test_xauusd_buy(self):
+        # open=2000, tp=2030 → tp_dist=30 → SL = 2000 + 9.9 = 2009.9
+        sl = calc_profit_lock_70_sl("buy", 2000.0, 2030.0)
+        assert abs(sl - 2009.9) < 0.01
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  calc_trailing_85_sl (neue Pure-Funktion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCalcTrailing85Sl:
+
+    def test_buy_sl_20pct_behind(self):
+        # open=1.0800, tp=1.0900 (dist=0.0100), current=1.0890
+        # SL = 1.0890 - 0.20*0.0100 = 1.0890 - 0.0020 = 1.0870
+        sl = calc_trailing_85_sl("buy", 1.0890, 1.0800, 1.0900)
+        assert abs(sl - 1.0870) < 1e-5
+
+    def test_sell_sl_20pct_behind(self):
+        # open=1.0900, tp=1.0800 (dist=0.0100), current=1.0815
+        # SL = 1.0815 + 0.0020 = 1.0835
+        sl = calc_trailing_85_sl("sell", 1.0815, 1.0900, 1.0800)
+        assert abs(sl - 1.0835) < 1e-5
+
+    def test_trail_moves_up_with_price(self):
+        # Price moves from 85% to 95%
+        sl1 = calc_trailing_85_sl("buy", 1.0885, 1.0800, 1.0900)
+        sl2 = calc_trailing_85_sl("buy", 1.0895, 1.0800, 1.0900)
+        assert sl2 > sl1

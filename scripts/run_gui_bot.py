@@ -916,6 +916,7 @@ class _LiveDashboardBackend:
                     sl_price=p.get("sl_price"),
                     tp_price=p.get("tp_price"),
                     break_even_active=bool(p.get("break_even_triggered")),
+                    open_time=p.get("open_time"),
                 ))
         except Exception:  # noqa: BLE001
             pass

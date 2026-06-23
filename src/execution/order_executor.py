@@ -201,6 +201,18 @@ class OrderExecutor:
                     t=ticket, sl=new_sl_price,
                 )
 
+    def mark_profit_lock_70(self, ticket: int) -> None:
+        """Markiert eine Paper-Position als 'Profit-Lock 70% erreicht'."""
+        if not self._live:
+            pos = self._paper_positions.get(ticket)
+            if pos and pos.get("status") == "open":
+                pos["profit_lock_70_triggered"] = True
+                self._write_paper_trades()
+                logger.info(
+                    "[PAPER] mark_profit_lock_70 | ticket={t}",
+                    t=ticket,
+                )
+
     def mark_break_even(self, ticket: int) -> None:
         """
         Markiert eine Paper-Position als 'Break-Even erreicht'.

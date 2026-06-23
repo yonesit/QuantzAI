@@ -95,6 +95,51 @@ def is_tp_hit(direction: str, tp_price: float, bid: float, ask: float) -> bool:
     return ask <= tp_price
 
 
+def calc_progress(
+    direction: str,
+    open_price: float,
+    tp_price: float,
+    current_price: float,
+) -> float:
+    """Fortschritt zum TP als Anteil (0.0 = kein Fortschritt, 1.0 = TP erreicht)."""
+    if direction == "buy":
+        total_dist = tp_price - open_price
+        if total_dist <= 0:
+            return 0.0
+        return (current_price - open_price) / total_dist
+    else:
+        total_dist = open_price - tp_price
+        if total_dist <= 0:
+            return 0.0
+        return (open_price - current_price) / total_dist
+
+
+def calc_profit_lock_70_sl(
+    direction: str,
+    open_price: float,
+    tp_price: float,
+) -> float:
+    """SL bei +33% der TP-Distanz – sichert ~33% des moeglichen Gewinns."""
+    tp_dist = abs(tp_price - open_price)
+    gain = tp_dist * 0.33
+    if direction == "buy":
+        return round(open_price + gain, 5)
+    return round(open_price - gain, 5)
+
+
+def calc_trailing_85_sl(
+    direction: str,
+    current_price: float,
+    open_price: float,
+    tp_price: float,
+) -> float:
+    """Trailing-SL 20% der TP-Distanz hinter dem aktuellen Kurs."""
+    trail = abs(tp_price - open_price) * 0.20
+    if direction == "buy":
+        return round(current_price - trail, 5)
+    return round(current_price + trail, 5)
+
+
 def calc_realized_pnl(
     direction: str,
     open_price: float,
@@ -228,32 +273,32 @@ class BreakEvenManager:
             return {"action": "tp_hit", "ticket": ticket,
                     "close_price": close_price, "pnl": pnl}
 
-        be_already_active = bool(pos.get("break_even_triggered"))
+        progress = calc_progress(direction, open_price, tp_price, current_price)
+        be_active    = bool(pos.get("break_even_triggered"))
+        lock_70_active = bool(pos.get("profit_lock_70_triggered"))
 
-        # 3. Break-Even auslösen
-        if not be_already_active:
-            if should_trigger_break_even(
-                direction, open_price, tp_price, current_price, self._be_threshold
-            ):
-                new_sl = calc_break_even_sl(
-                    direction, open_price, self._buf_pips, self._pip_size
-                )
-                sl_improves = (
-                    (direction == "buy"  and new_sl > sl_price) or
-                    (direction == "sell" and new_sl < sl_price)
-                )
-                if sl_improves:
-                    self._executor.set_stop_loss(ticket, new_sl)
-                self._executor.mark_break_even(ticket)
-                return {"action": "break_even", "ticket": ticket, "new_sl": new_sl}
+        # Stufe 2: ≥50% → Break-Even (einmalig)
+        if progress >= 0.50 and not be_active:
+            new_sl = calc_break_even_sl(direction, open_price, self._buf_pips, self._pip_size)
+            if (direction == "buy" and new_sl > sl_price) or (direction == "sell" and new_sl < sl_price):
+                self._executor.set_stop_loss(ticket, new_sl)
+            self._executor.mark_break_even(ticket)
+            return {"action": "break_even", "ticket": ticket, "new_sl": new_sl}
 
-        # 4. Trailing-Stop (nur wenn Break-Even bereits aktiv)
-        if be_already_active:
-            try:
-                self._executor.update_trailing_stop(ticket, current_price)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Trailing-Stop Fehler ticket={t}: {e}", t=ticket, e=exc)
-            return {"action": "trailing", "ticket": ticket}
+        # Stufe 3: ≥70% → SL auf +33% der TP-Distanz (einmalig)
+        if progress >= 0.70 and be_active and not lock_70_active:
+            new_sl = calc_profit_lock_70_sl(direction, open_price, tp_price)
+            if (direction == "buy" and new_sl > sl_price) or (direction == "sell" and new_sl < sl_price):
+                self._executor.set_stop_loss(ticket, new_sl)
+            self._executor.mark_profit_lock_70(ticket)
+            return {"action": "profit_lock_70", "ticket": ticket, "new_sl": new_sl}
+
+        # Stufe 4: ≥85% → Trailing 20% TP-Abstand (jeden Zyklus, nur aufwaerts)
+        if progress >= 0.85 and lock_70_active:
+            new_sl = calc_trailing_85_sl(direction, current_price, open_price, tp_price)
+            if (direction == "buy" and new_sl > sl_price) or (direction == "sell" and new_sl < sl_price):
+                self._executor.set_stop_loss(ticket, new_sl)
+            return {"action": "trailing_85", "ticket": ticket, "new_sl": new_sl}
 
         return None
 

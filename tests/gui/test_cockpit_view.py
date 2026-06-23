@@ -481,8 +481,8 @@ class TestCockpitView:
         assert not cockpit.sell_button.isChecked()
 
     def test_positions_table_columns(self, cockpit: CockpitView):
-        # Reiche Positions-Tabelle: Symbol, Richtung, Lots, Eröffnung, P&L, [Schliessen]
-        assert cockpit.positions_table.columnCount() == 6
+        # Reiche Positions-Tabelle: Symbol, Richtung, Lots, Eröffnung, P&L, Datum/Uhrzeit, [Schliessen]
+        assert cockpit.positions_table.columnCount() == 7
 
     def test_positions_table_empty_without_backend(self, cockpit: CockpitView):
         assert cockpit.positions_table.rowCount() == 0
@@ -667,7 +667,7 @@ class TestCockpitTradingStats:
         assert cockpit.total_stats_card is not None
 
     def test_positions_table_has_six_columns(self, cockpit: CockpitView):
-        assert cockpit.positions_table.columnCount() == 6
+        assert cockpit.positions_table.columnCount() == 7
 
     def test_update_trading_stats_populates_positions(self, cockpit: CockpitView):
         snap = _snap_with_positions()
@@ -715,7 +715,7 @@ class TestCockpitTradingStats:
     def test_positions_table_close_button_emits_signal(self, cockpit: CockpitView, qtbot: QtBot):
         snap = _snap_with_positions(ticket=99)
         cockpit.update_trading_stats(snap)
-        close_btn = cockpit.positions_table.cellWidget(0, 5)
+        close_btn = cockpit.positions_table.cellWidget(0, 6)
         assert close_btn is not None
         with qtbot.waitSignal(cockpit.position_close_requested, timeout=1000) as blocker:
             close_btn.click()
