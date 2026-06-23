@@ -744,7 +744,7 @@ class _LiveDashboardBackend:
                     symbol=sym,
                     direction=p["direction"],
                     lot_size=p["lot_size"],
-                    open_price=p.get("open_price", 0.0),
+                    open_price=p.get("open_price") or 0.0,
                     current_pnl=p.get("current_pnl"),
                 ))
         except Exception:  # noqa: BLE001

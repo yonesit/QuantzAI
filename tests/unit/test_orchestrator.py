@@ -265,7 +265,7 @@ class TestStepOrder:
         call_log = []
         orch, mocks = _make_orch()
         mocks["pos_sizer"].calculate_lot_size.side_effect = lambda *a, **k: (call_log.append("sizer") or _make_size_result())
-        mocks["executor"].open_position.side_effect = lambda *a: (call_log.append("open") or {"ticket": 1})
+        mocks["executor"].open_position.side_effect = lambda *a, **kw: (call_log.append("open") or {"ticket": 1})
         orch.run_cycle("EURUSD")
         assert call_log.index("sizer") < call_log.index("open")
 

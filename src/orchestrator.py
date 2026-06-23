@@ -362,7 +362,10 @@ class TradingOrchestrator:
         # ── Schritt 8: OrderExecutor ──────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 8: OrderExecutor ({dir} {lot})", sym=symbol, dir=direction, lot=lot_size)
 
-        order = self._executor.open_position(symbol, direction, lot_size, sl_price, tp_price)
+        order = self._executor.open_position(
+            symbol, direction, lot_size, sl_price, tp_price,
+            open_price=close_price if not getattr(self._executor, "_live", True) else None,
+        )
 
         result["action"]   = f"open_{direction}"
         result["ticket"]   = order.get("ticket")

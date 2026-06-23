@@ -121,22 +121,26 @@ class OrderExecutor:
         lot_size: float,
         sl_price: float,
         tp_price: float,
+        open_price: Optional[float] = None,
     ) -> dict:
         """
         Oeffnet eine Market-Order.
 
         Parameters
         ----------
-        symbol    : Handelssymbol, z.B. "EURUSD".
-        direction : "buy" oder "sell".
-        lot_size  : Lot-Groesse.
-        sl_price  : Stop-Loss-Preis.
-        tp_price  : Take-Profit-Preis.
+        symbol     : Handelssymbol, z.B. "EURUSD".
+        direction  : "buy" oder "sell".
+        lot_size   : Lot-Groesse.
+        sl_price   : Stop-Loss-Preis.
+        tp_price   : Take-Profit-Preis.
+        open_price : Optionaler simulierter Eroeffnungspreis (nur Paper-Modus).
+                     Wenn angegeben, wird er als Einstiegspreis im Paper-Trade gespeichert.
+                     Live-Modus ignoriert diesen Parameter (MT5 liefert den echten Preis).
 
         Returns
         -------
         dict mit ticket, symbol, direction, lot_size, sl_price, tp_price,
-        open_price (oder None im Paper-Modus), status.
+        open_price, status.
 
         Raises
         ------
@@ -150,7 +154,7 @@ class OrderExecutor:
             raise ValueError("lot_size muss positiv sein.")
 
         if not self._live:
-            return self._open_paper(symbol, direction, lot_size, sl_price, tp_price)
+            return self._open_paper(symbol, direction, lot_size, sl_price, tp_price, open_price)
 
         return self._open_live(symbol, direction, lot_size, sl_price, tp_price)
 
@@ -351,6 +355,7 @@ class OrderExecutor:
         lot_size: float,
         sl_price: float,
         tp_price: float,
+        fill_price: Optional[float] = None,
     ) -> dict:
         ticket = self._next_ticket
         self._next_ticket += 1
@@ -363,7 +368,7 @@ class OrderExecutor:
             "lot_size":   lot_size,
             "sl_price":   sl_price,
             "tp_price":   tp_price,
-            "open_price": None,
+            "open_price": fill_price,
             "open_time":  now,
             "close_price": None,
             "close_time":  None,
@@ -803,14 +808,15 @@ class OrderExecutor:
         result = []
         for p in positions:
             result.append({
-                "ticket":     p.ticket,
-                "symbol":     p.symbol,
-                "direction":  "buy" if p.type == mt5.ORDER_TYPE_BUY else "sell",
-                "lot_size":   p.volume,
-                "sl_price":   p.sl,
-                "tp_price":   p.tp,
-                "open_price": p.price_open,
-                "status":     "open",
+                "ticket":      p.ticket,
+                "symbol":      p.symbol,
+                "direction":   "buy" if p.type == mt5.ORDER_TYPE_BUY else "sell",
+                "lot_size":    p.volume,
+                "sl_price":    p.sl,
+                "tp_price":    p.tp,
+                "open_price":  p.price_open,
+                "current_pnl": p.profit,
+                "status":      "open",
             })
         return result
 

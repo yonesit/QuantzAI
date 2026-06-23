@@ -70,7 +70,7 @@ class PositionInfo:
     symbol:      str
     direction:   str
     lot_size:    float
-    open_price:  float
+    open_price:  float | None = None
     current_pnl: float | None = None
 
 
@@ -526,7 +526,7 @@ class _PositionsTable(QFrame):
                 pos.symbol,
                 pos.direction.upper(),
                 f"{pos.lot_size:.2f}",
-                f"{pos.open_price:.5f}",
+                f"{pos.open_price:.5f}" if pos.open_price is not None else "—",
                 pnl_text,
             ]
             for col, text in enumerate(cells):
