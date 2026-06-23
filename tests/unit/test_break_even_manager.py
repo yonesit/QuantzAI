@@ -377,6 +377,98 @@ class TestBreakEvenManagerManage:
         # aber get_symbol_info nur einmal (gecacht)
         assert mock_connector.get_symbol_info.call_count <= 1
 
+    # ── SL/TP Luecken-/Sprung-Szenario (GAP-OVER) ────────────────────────────
+
+    def test_sl_gap_over_buy_closes_position(self, mock_connector, mock_executor):
+        """
+        BUY: Kurs SPRINGT von 1.14050 direkt auf 1.13900 ohne den exakten SL-Wert
+        1.14000 zu beruehren. Position muss trotzdem korrekt geschlossen werden.
+
+        Prueft: is_sl_hit nutzt '<=', nicht '=='. Das ist der wichtigste Korrektheitsbeweis
+        fuer Wochenend-Gaps und volatile Markte.
+        """
+        pos = _make_pos(
+            ticket=42,
+            symbol="EURUSD",
+            direction="buy",
+            open_price=1.14083,
+            sl_price=1.14000,   # SL liegt bei 1.14000
+            tp_price=1.14283,
+            lot_size=0.66,
+        )
+        mock_executor.get_open_positions.return_value = [pos]
+        # Kurs springt von 1.14050 direkt auf 1.13900 – SL (1.14000) wird uebersprungen
+        mock_connector.get_tick.return_value = {"bid": 1.13900, "ask": 1.13902}
+
+        mgr = BreakEvenManager(mock_connector, mock_executor)
+        actions = mgr.manage("EURUSD")
+
+        assert len(actions) == 1, (
+            "Position muss bei Gap-Over des SL geschlossen werden! "
+            f"Erhaltene Aktionen: {actions}"
+        )
+        assert actions[0]["action"] == "sl_hit"
+        assert actions[0]["ticket"] == 42
+        mock_executor.close_position.assert_called_once()
+        close_kwargs = mock_executor.close_position.call_args.kwargs
+        assert close_kwargs.get("close_price") is not None
+        assert close_kwargs.get("pnl") is not None
+        # Verlust weil bid (1.13900) < open (1.14083)
+        assert close_kwargs["pnl"] < 0, "Gap-Over SL muss negativen PnL erzeugen"
+
+    def test_sl_gap_over_sell_closes_position(self, mock_connector, mock_executor):
+        """
+        SELL: Kurs SPRINGT von 1.0800 direkt auf 1.0920 ohne den exakten SL-Wert
+        1.0910 zu beruehren. Position muss trotzdem korrekt geschlossen werden.
+        """
+        pos = _make_pos(
+            ticket=43,
+            symbol="EURUSD",
+            direction="sell",
+            open_price=1.0850,
+            sl_price=1.0910,   # SL liegt bei 1.0910
+            tp_price=1.0750,
+            lot_size=0.1,
+        )
+        mock_executor.get_open_positions.return_value = [pos]
+        # Ask springt von 1.0800 auf 1.0920 – SL (1.0910) wird uebersprungen
+        mock_connector.get_tick.return_value = {"bid": 1.0918, "ask": 1.0920}
+
+        mgr = BreakEvenManager(mock_connector, mock_executor)
+        actions = mgr.manage("EURUSD")
+
+        assert len(actions) == 1, (
+            "SELL-Position muss bei Gap-Over des SL geschlossen werden!"
+        )
+        assert actions[0]["action"] == "sl_hit"
+        mock_executor.close_position.assert_called_once()
+
+    def test_tp_gap_over_buy_closes_position(self, mock_connector, mock_executor):
+        """
+        BUY: Kurs SPRINGT von 1.0880 direkt auf 1.0920 ohne den exakten TP-Wert
+        1.0900 zu beruehren. TP muss trotzdem korrekt ausgeloest werden.
+        """
+        pos = _make_pos(
+            ticket=44,
+            direction="buy",
+            open_price=1.0800,
+            sl_price=1.0750,
+            tp_price=1.0900,   # TP liegt bei 1.0900
+            lot_size=0.1,
+        )
+        mock_executor.get_open_positions.return_value = [pos]
+        # bid springt von 1.0880 auf 1.0920 – TP (1.0900) wird uebersprungen
+        mock_connector.get_tick.return_value = {"bid": 1.0920, "ask": 1.0922}
+
+        mgr = BreakEvenManager(mock_connector, mock_executor)
+        actions = mgr.manage("EURUSD")
+
+        assert len(actions) == 1
+        assert actions[0]["action"] == "tp_hit"
+        close_kwargs = mock_executor.close_position.call_args.kwargs
+        # Gewinn weil bid (1.0920) > open (1.0800)
+        assert close_kwargs["pnl"] > 0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  _calc_crv (aus run_gui_bot.py)

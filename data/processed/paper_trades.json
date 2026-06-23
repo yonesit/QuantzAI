@@ -1,0 +1,15 @@
+[
+  {
+    "ticket": 1,
+    "symbol": "EURUSD",
+    "direction": "buy",
+    "lot_size": 0.1,
+    "sl_price": 1.08,
+    "tp_price": 1.1,
+    "open_price": null,
+    "open_time": "2026-06-23T11:28:26.673263+00:00",
+    "close_price": null,
+    "close_time": null,
+    "status": "open"
+  }
+]
