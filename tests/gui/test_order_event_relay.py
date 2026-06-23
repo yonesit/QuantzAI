@@ -247,7 +247,7 @@ class TestOrderEventRelay:
 
 class TestPositionsTableOperations:
     def _make_table(self, qtbot):
-        from gui.views.dashboard_view import _PositionsTable
+        from gui.views.cockpit_view import _PositionsTable
         widget = _PositionsTable()
         qtbot.addWidget(widget)
         return widget

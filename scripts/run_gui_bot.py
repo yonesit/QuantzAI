@@ -1112,6 +1112,9 @@ def main(argv=None) -> int:
     # Markt-Chart mit XAUUSD als Primär-Symbol
     window.dashboard_view.set_chart_connector(connector, "XAUUSD")
 
+    # Watchlist im Cockpit mit Live-Bid/Ask + Tagesveränderung der 4 Symbole füllen
+    window.cockpit_view.set_watchlist_connector(connector, {})
+
     # #56/#57/#58: Bot-Steuerung + ActivityLog + Bestätigung
     window.bot_controls.set_orchestrator(
         stack["orchestrator"],

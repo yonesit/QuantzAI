@@ -28,9 +28,7 @@ from gui.views.dashboard_view import (
     RiskStatus,
     SignalInfo,
     _AccountCard,
-    _DailyStatsCard,
     _DrawdownGauge,
-    _PositionsTable,
     _RiskTrafficLight,
     _SignalPanel,
     compute_risk_status,
@@ -474,120 +472,6 @@ class TestRiskTrafficLight:
             risk_reasons=["Post-Loss-Phase aktiv"],
         ))
         assert "Post-Loss" in w._reason_lbl.text()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _PositionsTable (Qt)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestPositionsTable:
-    def test_creates(self, qtbot: QtBot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        assert t is not None
-
-    def test_empty_positions_zero_rows(self, qtbot: QtBot, snap_empty: DashboardSnapshot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        t.refresh(snap_empty)
-        assert t.table.rowCount() == 0
-
-    def test_two_positions_two_rows(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        t.refresh(snap_full)
-        assert t.table.rowCount() == 2
-
-    def test_position_symbol_in_table(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        t.refresh(snap_full)
-        first_cell = t.table.item(0, 0)
-        assert first_cell is not None
-        assert "EURUSD" in first_cell.text()
-
-    def test_positive_pnl_shown(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        t.refresh(snap_full)
-        pnl_item = t.table.item(0, 4)
-        assert pnl_item is not None
-        assert "+" in pnl_item.text()
-
-    def test_negative_pnl_shown(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        t.refresh(snap_full)
-        pnl_item = t.table.item(1, 4)
-        assert pnl_item is not None
-        assert "-" in pnl_item.text()
-
-    def test_six_columns(self, qtbot: QtBot):
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        assert t.table.columnCount() == 6  # 5 data cols + Schliessen-Button col
-
-    def test_header_labels_full_text(self, qtbot: QtBot):
-        from PySide6.QtWidgets import QHeaderView
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        labels = [
-            t.table.horizontalHeaderItem(i).text()
-            for i in range(t.table.columnCount())
-        ]
-        assert labels == ["Symbol", "Richtung", "Lots", "Eröffnung", "P&L", ""]
-
-    def test_header_resize_mode_is_resize_to_contents(self, qtbot: QtBot):
-        from PySide6.QtWidgets import QHeaderView
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        hdr = t.table.horizontalHeader()
-        # First 4 sections should be ResizeToContents; last stretches
-        for i in range(4):
-            assert hdr.sectionResizeMode(i) == QHeaderView.ResizeMode.ResizeToContents
-
-    def test_last_section_stretches(self, qtbot: QtBot):
-        from PySide6.QtWidgets import QHeaderView
-        t = _PositionsTable()
-        qtbot.addWidget(t)
-        hdr = t.table.horizontalHeader()
-        assert hdr.sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  _DailyStatsCard (Qt)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestDailyStatsCard:
-    def test_creates(self, qtbot: QtBot):
-        c = _DailyStatsCard()
-        qtbot.addWidget(c)
-        assert c is not None
-
-    def test_shows_trade_count(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        c = _DailyStatsCard()
-        qtbot.addWidget(c)
-        c.refresh(snap_full)
-        assert "5" in c.trades_label.text()
-
-    def test_shows_day_pnl(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        c = _DailyStatsCard()
-        qtbot.addWidget(c)
-        c.refresh(snap_full)
-        assert "150" in c.pnl_label.text()
-
-    def test_shows_win_rate(self, qtbot: QtBot, snap_full: DashboardSnapshot):
-        c = _DailyStatsCard()
-        qtbot.addWidget(c)
-        c.refresh(snap_full)  # 0.6 -> 60.0%
-        assert "60" in c.winrate_label.text()
-
-    def test_no_data_shows_placeholder(self, qtbot: QtBot, snap_empty: DashboardSnapshot):
-        c = _DailyStatsCard()
-        qtbot.addWidget(c)
-        c.refresh(snap_empty)
-        assert c.pnl_label.text() == "--"
-        assert c.winrate_label.text() == "--"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
