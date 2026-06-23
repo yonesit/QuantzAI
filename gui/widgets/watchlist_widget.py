@@ -69,9 +69,10 @@ class _NumericItem(QTableWidgetItem):
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SIGNAL_LABELS = {
-    "long":  "▲ LONG",
-    "short": "▼ SHORT",
-    "flat":  "— FLAT",
+    "long":        "▲ LONG",
+    "short":       "▼ SHORT",
+    "flat":        "— FLAT",
+    "kein modell": "∅ kein Modell",
 }
 _SIGNAL_COLORS = {
     "long":  "#22c55e",

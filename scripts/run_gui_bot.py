@@ -1064,17 +1064,13 @@ def main(argv=None) -> int:
         })
     )
 
-    # Echtzeit-Order-Updates direkt ins Dashboard (ohne auf nächsten Poll zu warten)
-    # Paper-Modus: [P]-Prefix damit simulierte Positionen sofort erkennbar sind
-    def _on_paper_order_opened(order: dict) -> None:
-        window.dashboard_view.on_order_opened(
-            dict(order, symbol=f"[P] {order.get('symbol', '')}")
-        )
-    window._paper_order_open_cb = _on_paper_order_opened  # keep Qt reference alive
-    relay.order_opened.connect(window._paper_order_open_cb)
-    relay.order_closed.connect(window.dashboard_view.on_order_closed)
+    # Echtzeit-Order-Updates ins Cockpit (Positionen werden dort verwaltet)
+    window.cockpit_view.connect_order_executor(relay)
 
-    # Position schließen per Dashboard-Button (inkl. close_price + pnl)
+    # Cockpit-Statistiken bei jedem Dashboard-Polling-Tick mitziehen
+    window.dashboard_view.data_refreshed.connect(window.cockpit_view.update_trading_stats)
+
+    # Position schließen per Cockpit-Button (inkl. close_price + pnl)
     def _close_position(ticket: int) -> None:
         try:
             pos_list = [
@@ -1111,7 +1107,7 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.error("Position {t} schliessen fehlgeschlagen: {exc}", t=ticket, exc=exc)
 
-    window.dashboard_view.position_close_requested.connect(_close_position)
+    window.cockpit_view.position_close_requested.connect(_close_position)
 
     # Markt-Chart mit XAUUSD als Primär-Symbol
     window.dashboard_view.set_chart_connector(connector, "XAUUSD")

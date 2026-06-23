@@ -334,10 +334,15 @@ class TestPositionsTableOperations:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  4.  DashboardView – connect_order_executor
+#  4.  DashboardView – connect_order_executor (Positionen jetzt im Cockpit)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDashboardViewOrderUpdate:
+    """
+    Positionen wurden ins Cockpit verschoben. Das DashboardView behaelt
+    die Methoden fuer Rueckwaertskompatibilitaet, aber als No-ops.
+    """
+
     def test_connect_order_executor_method_exists(self, qtbot):
         view = DashboardView()
         qtbot.addWidget(view)
@@ -353,58 +358,30 @@ class TestDashboardViewOrderUpdate:
         qtbot.addWidget(view)
         assert hasattr(view, "on_order_closed")
 
-    def test_on_order_opened_adds_row(self, qtbot):
+    def test_on_order_opened_is_noop(self, qtbot):
+        """Dashboard-Methode ist jetzt No-op – keine Positionen mehr im Dashboard."""
         view = DashboardView()
         qtbot.addWidget(view)
-        assert view.positions_table.table.rowCount() == 0
-        view.on_order_opened(_open_order())
-        assert view.positions_table.table.rowCount() == 1
+        view.on_order_opened(_open_order())  # darf nicht crashen
 
-    def test_on_order_opened_shows_symbol(self, qtbot):
+    def test_on_order_closed_is_noop(self, qtbot):
+        """Dashboard-Methode ist jetzt No-op – keine Positionen mehr im Dashboard."""
         view = DashboardView()
         qtbot.addWidget(view)
-        view.on_order_opened(_open_order())
-        assert view.positions_table.table.item(0, 0).text() == "EURUSD"
+        view.on_order_closed(_close_order())  # darf nicht crashen
 
-    def test_on_order_closed_removes_row(self, qtbot):
-        view = DashboardView()
-        qtbot.addWidget(view)
-        view.on_order_opened(_open_order())
-        assert view.positions_table.table.rowCount() == 1
-        view.on_order_closed(_close_order())
-        assert view.positions_table.table.rowCount() == 0
-
-    def test_connect_order_executor_wires_relay_signals(self, tmp_path, qtbot):
+    def test_connect_order_executor_does_not_crash(self, tmp_path, qtbot):
         executor = _make_executor(tmp_path / "trades.json")
         relay = OrderEventRelay()
         relay.attach(executor)
         view = DashboardView()
         qtbot.addWidget(view)
         view.connect_order_executor(relay)
-        executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
-        qtbot.waitUntil(lambda: view.positions_table.table.rowCount() == 1, timeout=2000)
-        relay.deleteLater()
-
-    def test_relay_close_removes_row_in_dashboard(self, tmp_path, qtbot):
-        executor = _make_executor(tmp_path / "trades.json")
-        relay = OrderEventRelay()
-        relay.attach(executor)
-        view = DashboardView()
-        qtbot.addWidget(view)
-        view.connect_order_executor(relay)
-        executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
-        qtbot.waitUntil(lambda: view.positions_table.table.rowCount() == 1, timeout=2000)
-        ticket = list(executor._paper_positions.keys())[0]
-        executor.close_position(ticket)
-        qtbot.waitUntil(lambda: view.positions_table.table.rowCount() == 0, timeout=2000)
         relay.deleteLater()
 
     def test_polling_still_works_after_relay_connection(self, tmp_path, qtbot):
         backend = MagicMock()
-        backend.fetch_snapshot.return_value = DashboardSnapshot(
-            positions=[PositionInfo(ticket=99, symbol="XAUUSD",
-                                    direction="buy", lot_size=0.1, open_price=1800.0)]
-        )
+        backend.fetch_snapshot.return_value = DashboardSnapshot()
         view = DashboardView(backend=backend, interval_ms=100)
         qtbot.addWidget(view)
         relay = OrderEventRelay()
@@ -414,31 +391,6 @@ class TestDashboardViewOrderUpdate:
             lambda: backend.fetch_snapshot.call_count >= 1, timeout=1000
         )
         view.stop_polling()
-        relay.deleteLater()
-
-    def test_paper_mode_position_visible_in_dashboard(self, tmp_path, qtbot):
-        executor = _make_executor(tmp_path / "trades.json")
-        relay = OrderEventRelay()
-        relay.attach(executor)
-        view = DashboardView()
-        qtbot.addWidget(view)
-        view.connect_order_executor(relay)
-        executor.open_position("USDJPY", "sell", 0.20, 145.0, 142.0)
-        qtbot.waitUntil(lambda: view.positions_table.table.rowCount() == 1, timeout=2000)
-        assert view.positions_table.table.item(0, 0).text() == "USDJPY"
-        relay.deleteLater()
-
-    def test_highlight_applied_after_relay_open(self, tmp_path, qtbot):
-        executor = _make_executor(tmp_path / "trades.json")
-        relay = OrderEventRelay()
-        relay.attach(executor)
-        view = DashboardView()
-        qtbot.addWidget(view)
-        view.connect_order_executor(relay)
-        executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
-        qtbot.waitUntil(lambda: view.positions_table.table.rowCount() == 1, timeout=2000)
-        bg = view.positions_table.table.item(0, 0).background().color()
-        assert bg != QColor("transparent")
         relay.deleteLater()
 
 
@@ -536,6 +488,7 @@ class TestCockpitViewOrderUpdate:
 
 class TestEndToEnd:
     def test_both_views_update_on_single_open(self, tmp_path, qtbot):
+        """Positionen werden jetzt im Cockpit verwaltet – Cockpit-Backend wird abgefragt."""
         from gui.views.cockpit_view import CockpitView
         executor = _make_executor(tmp_path / "trades.json")
         relay = OrderEventRelay()
@@ -543,7 +496,7 @@ class TestEndToEnd:
 
         dash = DashboardView()
         qtbot.addWidget(dash)
-        dash.connect_order_executor(relay)
+        dash.connect_order_executor(relay)  # No-op auf Dashboard
 
         cockpit = CockpitView()
         qtbot.addWidget(cockpit)
@@ -558,21 +511,22 @@ class TestEndToEnd:
         cockpit.connect_order_executor(relay)
 
         executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
-        qtbot.waitUntil(lambda: dash.positions_table.table.rowCount() == 1, timeout=2000)
-        qtbot.wait(100)
-        assert cockpit_backend.get_open_positions.call_count >= 1
+        # Cockpit-Backend wird aufgerufen (Positionen jetzt im Cockpit)
+        qtbot.waitUntil(
+            lambda: cockpit_backend.get_open_positions.call_count >= 1, timeout=2000
+        )
         relay.deleteLater()
 
     def test_relay_reusable_after_detach_reattach(self, tmp_path, qtbot):
         executor = _make_executor(tmp_path / "trades.json")
         relay = OrderEventRelay()
         relay.attach(executor)
-        dash = DashboardView()
-        qtbot.addWidget(dash)
-        dash.connect_order_executor(relay)
 
+        # Synchronisation ueber Relay-Signal (nicht ueber Dashboard-Tabelle)
+        fired: list = []
+        relay.order_opened.connect(lambda o: fired.append(o))
         executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
-        qtbot.waitUntil(lambda: dash.positions_table.table.rowCount() == 1, timeout=2000)
+        qtbot.waitUntil(lambda: len(fired) >= 1, timeout=2000)
 
         relay.detach(executor)
         # Nach detach – kein weiteres Signal
@@ -584,20 +538,23 @@ class TestEndToEnd:
         relay.deleteLater()
 
     def test_multiple_open_close_cycles(self, tmp_path, qtbot):
+        """3x open + 3x close – Relay faeuert korrekten Signal-Count."""
         executor = _make_executor(tmp_path / "trades.json")
         relay = OrderEventRelay()
         relay.attach(executor)
-        dash = DashboardView()
-        qtbot.addWidget(dash)
-        dash.connect_order_executor(relay)
+
+        open_count: list = []
+        close_count: list = []
+        relay.order_opened.connect(lambda o: open_count.append(1))
+        relay.order_closed.connect(lambda o: close_count.append(1))
 
         for _ in range(3):
             executor.open_position("EURUSD", "buy", 0.10, 1.08, 1.12)
 
-        qtbot.waitUntil(lambda: dash.positions_table.table.rowCount() == 3, timeout=3000)
+        qtbot.waitUntil(lambda: len(open_count) == 3, timeout=3000)
 
         for ticket in list(executor._paper_positions.keys()):
             executor.close_position(ticket)
 
-        qtbot.waitUntil(lambda: dash.positions_table.table.rowCount() == 0, timeout=3000)
+        qtbot.waitUntil(lambda: len(close_count) == 3, timeout=3000)
         relay.deleteLater()

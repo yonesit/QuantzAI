@@ -1,6 +1,7 @@
 """
 gui/views/cockpit_view.py
-CockpitView – zentrale Arbeitsansicht: Chart, Watchlist und Order-Kontrolle.
+CockpitView – zentrale Arbeitsansicht: Chart, Watchlist, Order-Kontrolle,
+Positionsverwaltung und Performance-Zahlen.
 
 Layout:
   ┌─────────────────────────────┬──────────────────┐
@@ -11,7 +12,9 @@ Layout:
   ├────────────────────────────────────────────────┤
   │  Manuelle Order: Symbol | BUY/SELL | Lots | SL | TP | [Aufgeben]   │
   ├────────────────────────────────────────────────┤
-  │  Offene Positionen (Ticket | Symbol | Richtung | Lots | [Schliessen])│
+  │  Heutige Statistiken | Gesamt seit Teststart   │
+  ├────────────────────────────────────────────────┤
+  │  Offene Positionen (Symbol | Richtg | Lots | Preis | P&L | [Schliessen]) │
   └────────────────────────────────────────────────┘
 
 Backend-Protocol (CockpitBackend):
@@ -22,6 +25,11 @@ Backend-Protocol (CockpitBackend):
   update_sl_tp(ticket, sl, tp)           -> dict
   open_position(symbol, direction, lot, sl, tp) -> dict
 
+Watchlist-Befuellung:
+  set_watchlist_connector(connector, signal_providers) fuellt die
+  4 Standard-Symbole (XAUUSD, EURUSD, USDJPY, GBPUSD) mit Live-Daten
+  aus dem MT5Connector und optionalen Modell-Signal-Callbacks.
+
 Testbarkeit:
   _confirm_fn injizierbar (ersetzt ConfirmationDialog.ask)
   Backend via set_backend() setzbar.
@@ -31,7 +39,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
@@ -41,14 +49,22 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from gui.widgets.chart_widget import CandleData, ChartWidget, Timeframe
 from gui.widgets.watchlist_widget import WatchlistEntry, WatchlistWidget
+from gui.views.dashboard_view import (
+    _DailyStatsCard,
+    _PositionsTable,
+    _TotalStatsCard,
+    DashboardSnapshot,
+    PositionInfo,
+)
+
+# Symbole die immer in der Watchlist erscheinen
+WATCHLIST_SYMBOLS = ["XAUUSD", "EURUSD", "USDJPY", "GBPUSD"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,21 +98,6 @@ class CockpitBackend(Protocol):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Positions-Tabellen-Spalten
-# ─────────────────────────────────────────────────────────────────────────────
-
-_POS_COL_TICKET = 0
-_POS_COL_SYMBOL = 1
-_POS_COL_DIR    = 2
-_POS_COL_LOTS   = 3
-_POS_COL_PRICE  = 4
-_POS_COL_SL     = 5
-_POS_COL_TP     = 6
-_POS_COL_ACTION = 7
-_POS_HEADERS    = ["Ticket", "Symbol", "Richtung", "Lots", "Eröffnung", "SL", "TP", "Aktion"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  CockpitView
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -106,8 +107,10 @@ class CockpitView(QWidget):
 
     Signals
     -------
-    order_submitted(dict)    – emittiert wenn eine manuelle Order aufgegeben wurde.
-    position_closed(object)  – emittiert wenn eine Position geschlossen wurde (Ticket).
+    order_submitted(dict)           – emittiert wenn eine manuelle Order aufgegeben wurde.
+    position_closed(object)         – emittiert wenn eine Position bestaetigt geschlossen wurde.
+    position_close_requested(int)   – emittiert wenn der Nutzer den Schliessen-Button drueckt
+                                      (ohne Dialog, fuer externe Handler wie run_gui_bot.py).
 
     Parameters
     ----------
@@ -116,8 +119,9 @@ class CockpitView(QWidget):
                    Standard: ConfirmationDialog.ask() via spaeten Import.
     """
 
-    order_submitted  = Signal(dict)
-    position_closed  = Signal(object)
+    order_submitted         = Signal(dict)
+    position_closed         = Signal(object)
+    position_close_requested = Signal(int)   # direkt aus Tabellen-Button, kein Dialog
 
     def __init__(
         self,
@@ -131,6 +135,12 @@ class CockpitView(QWidget):
         self._backend     = backend
         self._confirm_fn  = _confirm_fn
         self._active_sym  = ""
+
+        # Watchlist-Datenquellen (optional, via set_watchlist_connector)
+        self._watchlist_connector = None
+        self._signal_providers: dict[str, Callable] = {}
+        self._watchlist_timer = QTimer(self)
+        self._watchlist_timer.timeout.connect(self._refresh_watchlist)
 
         self._build()
 
@@ -204,7 +214,6 @@ class CockpitView(QWidget):
 
         order_row.addSpacing(8)
 
-        # Richtungs-Buttons
         self._buy_btn = QPushButton("BUY")
         self._buy_btn.setObjectName("order_buy_btn")
         self._buy_btn.setCheckable(True)
@@ -220,7 +229,6 @@ class CockpitView(QWidget):
 
         order_row.addSpacing(8)
 
-        # Lots
         order_row.addWidget(QLabel("Lots:"))
         self._lot_spin = QDoubleSpinBox()
         self._lot_spin.setObjectName("order_lot_spin")
@@ -231,7 +239,6 @@ class CockpitView(QWidget):
         self._lot_spin.setMinimumWidth(70)
         order_row.addWidget(self._lot_spin)
 
-        # SL
         order_row.addWidget(QLabel("SL:"))
         self._sl_spin = QDoubleSpinBox()
         self._sl_spin.setObjectName("order_sl_spin")
@@ -242,7 +249,6 @@ class CockpitView(QWidget):
         self._sl_spin.setToolTip("Stop-Loss Preis (0 = kein SL)")
         order_row.addWidget(self._sl_spin)
 
-        # TP
         order_row.addWidget(QLabel("TP:"))
         self._tp_spin = QDoubleSpinBox()
         self._tp_spin.setObjectName("order_tp_spin")
@@ -255,7 +261,6 @@ class CockpitView(QWidget):
 
         order_row.addSpacing(8)
 
-        # Submit-Button
         self._submit_btn = QPushButton("Order aufgeben")
         self._submit_btn.setObjectName("order_submit_btn")
         self._submit_btn.clicked.connect(self._on_submit_order)
@@ -264,24 +269,20 @@ class CockpitView(QWidget):
         order_row.addStretch()
         root.addWidget(order_frame)
 
-        # ── Offene Positionen ─────────────────────────────────────────────────
-        pos_label = QLabel("Offene Positionen")
-        pos_label.setObjectName("positions_label")
-        f2 = pos_label.font()
-        f2.setBold(True)
-        pos_label.setFont(f2)
-        root.addWidget(pos_label)
+        # ── Heutige Statistiken ───────────────────────────────────────────────
+        self._daily_stats = _DailyStatsCard()
+        root.addWidget(self._daily_stats)
 
-        self._positions_table = QTableWidget(0, len(_POS_HEADERS))
-        self._positions_table.setObjectName("positions_table")
-        self._positions_table.setHorizontalHeaderLabels(_POS_HEADERS)
-        self._positions_table.setMaximumHeight(160)
-        self._positions_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._positions_table.verticalHeader().setVisible(False)
-        self._positions_table.horizontalHeader().setStretchLastSection(True)
-        root.addWidget(self._positions_table)
+        # ── Gesamt-Statistiken (seit Teststart) ───────────────────────────────
+        self._total_stats = _TotalStatsCard()
+        root.addWidget(self._total_stats)
+
+        # ── Offene Positionen (reich: mit P&L + Schliessen-Button) ───────────
+        self._pos_rich = _PositionsTable()
+        # Schliessen-Button der Tabelle emittiert direkt position_close_requested
+        # (kein interner Dialog – externer Handler wie run_gui_bot.py übernimmt)
+        self._pos_rich.close_requested.connect(self.position_close_requested)
+        root.addWidget(self._pos_rich)
 
     # ── Oeffentliche Methoden ─────────────────────────────────────────────────
 
@@ -291,14 +292,43 @@ class CockpitView(QWidget):
         self._refresh_positions()
 
     def update_watchlist(self, entries: list[WatchlistEntry]) -> None:
-        """Aktualisiert die Watchlist-Daten."""
+        """Aktualisiert die Watchlist-Daten (manuell, ohne Connector)."""
         self._watchlist.update_entries(entries)
 
+    def update_trading_stats(self, snap: DashboardSnapshot) -> None:
+        """
+        Aktualisiert Positionen (mit P&L), Tages- und Gesamtstatistiken
+        aus einem DashboardSnapshot.
+
+        Wird typischerweise vom MainWindow nach jedem Dashboard-Polling-Tick
+        aufgerufen, um Cockpit-Daten synchron zu halten.
+        """
+        self._pos_rich.refresh(snap)
+        self._daily_stats.refresh(snap)
+        self._total_stats.refresh(snap)
+
+    def set_watchlist_connector(
+        self,
+        connector: Any,
+        signal_providers: dict[str, Callable] | None = None,
+    ) -> None:
+        """
+        Verbindet einen MT5Connector fuer Live-Watchlist-Daten.
+
+        Parameters
+        ----------
+        connector        : MT5Connector-Instanz mit get_tick() und get_ohlcv_count().
+        signal_providers : dict {symbol: callable() -> {"signal": str, "confidence": float}}
+                           Symbole ohne Eintrag erhalten signal="kein modell".
+        """
+        self._watchlist_connector = connector
+        self._signal_providers = signal_providers or {}
+        self._refresh_watchlist()
+        if not self._watchlist_timer.isActive():
+            self._watchlist_timer.start(5_000)
+
     def show_pending_request(self, message: str) -> None:
-        """
-        Zeigt einen nicht-blockierenden Hinweis (z.B. Bestaetigungsanfrage
-        vom TradingOrchestrator im CONFIRM_REQUIRED-Modus).
-        """
+        """Zeigt einen nicht-blockierenden Hinweis-Banner."""
         self._hint_label.setText(message)
         self._hint_frame.show()
 
@@ -322,12 +352,10 @@ class CockpitView(QWidget):
                 self._lot_spin.setValue(lot)
             except Exception:  # noqa: BLE001
                 pass
-            # Kerzen laden
             tf = self._chart.current_timeframe.label
             try:
                 candles = self._backend.fetch_candles(symbol, tf, limit=200)
                 self._chart.set_candles(candles)
-                # Approximierte Bid/Ask aus letzter Kerze (ca. 1.5 Pips Spread)
                 if candles:
                     last = candles[-1]
                     approx_spread = 0.00015
@@ -345,7 +373,6 @@ class CockpitView(QWidget):
                     self._active_sym, tf.label, limit=200
                 )
                 self._chart.set_candles(candles)
-                # Approximierte Bid/Ask aus letzter Kerze (ca. 1.5 Pips Spread)
                 if candles:
                     last = candles[-1]
                     approx_spread = 0.00015
@@ -379,6 +406,7 @@ class CockpitView(QWidget):
         self._refresh_positions()
 
     def _on_close_position(self, ticket: Any, symbol: str) -> None:
+        """Zeigt Bestaetigung und schliesst Position via Backend (fuer Tests)."""
         confirmed = self._show_confirmation(
             title="Position schliessen",
             message=(
@@ -395,64 +423,84 @@ class CockpitView(QWidget):
     def _show_confirmation(self, title: str, message: str, label: str) -> bool:
         if self._confirm_fn is not None:
             return self._confirm_fn(title, message, label)
-        # Spaeter Import um zirkulaere Abhaengigkeit mit gui.app zu vermeiden
         from gui.app import ConfirmationDialog  # noqa: PLC0415
         return ConfirmationDialog.ask(
             title=title, message=message, confirm_label=label, parent=self
         )
 
     def _refresh_positions(self) -> None:
+        """Holt Positionen vom Backend und fuettert die reiche Positions-Tabelle."""
         if self._backend is None:
             return
         try:
             positions = self._backend.get_open_positions()
         except Exception:  # noqa: BLE001
             return
+        pos_infos = [
+            PositionInfo(
+                ticket=p.get("ticket", ""),
+                symbol=p.get("symbol", ""),
+                direction=p.get("direction", ""),
+                lot_size=float(p.get("lot_size", 0.0)),
+                open_price=p.get("open_price"),
+                current_pnl=p.get("current_pnl"),
+                sl_price=p.get("sl_price"),
+                tp_price=p.get("tp_price"),
+                break_even_active=bool(p.get("break_even_active", False)),
+            )
+            for p in positions
+        ]
+        self._pos_rich.refresh(DashboardSnapshot(positions=pos_infos))
 
-        self._positions_table.setRowCount(0)
-        for pos in positions:
-            row = self._positions_table.rowCount()
-            self._positions_table.insertRow(row)
+    @Slot()
+    def _refresh_watchlist(self) -> None:
+        """Holt Live-Bid/Ask, Tagesveraenderung und Modell-Signale fuer alle Watchlist-Symbole."""
+        if self._watchlist_connector is None:
+            return
+        entries: list[WatchlistEntry] = []
+        for sym in WATCHLIST_SYMBOLS:
+            bid: float | None = None
+            ask: float | None = None
+            change: float | None = None
+            signal = "flat"
+            conf = 0.0
 
-            ticket = pos.get("ticket", "")
-            symbol = pos.get("symbol", "")
+            try:
+                tick = self._watchlist_connector.get_tick(sym)
+                bid = float(tick.get("bid", 0)) or None
+                ask = float(tick.get("ask", 0)) or None
+            except Exception:  # noqa: BLE001
+                pass
 
-            def _cell(text: str) -> QTableWidgetItem:
-                item = QTableWidgetItem(str(text))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                return item
+            try:
+                df = self._watchlist_connector.get_ohlcv_count(sym, "D1", count=2)
+                if df is not None and len(df) >= 1:
+                    day_open = float(df.iloc[-1]["open"])
+                    if day_open:
+                        mid = ((bid or 0) + (ask or 0)) / 2 or day_open
+                        change = (mid - day_open) / day_open * 100
+            except Exception:  # noqa: BLE001
+                pass
 
-            self._positions_table.setItem(row, _POS_COL_TICKET, _cell(ticket))
-            self._positions_table.setItem(row, _POS_COL_SYMBOL, _cell(symbol))
-            self._positions_table.setItem(
-                row, _POS_COL_DIR, _cell(pos.get("direction", ""))
-            )
-            self._positions_table.setItem(
-                row, _POS_COL_LOTS, _cell(f"{pos.get('lot_size', 0):.2f}")
-            )
-            self._positions_table.setItem(
-                row, _POS_COL_PRICE, _cell(f"{pos.get('open_price', 0):.5f}")
-            )
-            self._positions_table.setItem(
-                row, _POS_COL_SL, _cell(
-                    f"{pos.get('sl_price', 0):.5f}"
-                    if pos.get("sl_price") else "–"
-                )
-            )
-            self._positions_table.setItem(
-                row, _POS_COL_TP, _cell(
-                    f"{pos.get('tp_price', 0):.5f}"
-                    if pos.get("tp_price") else "–"
-                )
-            )
+            if sym in self._signal_providers:
+                try:
+                    result = self._signal_providers[sym]()
+                    signal = result.get("signal", "flat")
+                    conf = float(result.get("confidence", 0.0))
+                except Exception:  # noqa: BLE001
+                    signal = "flat"
+            else:
+                signal = "kein modell"
 
-            # Schliessen-Button
-            close_btn = QPushButton("Schliessen")
-            close_btn.setObjectName(f"close_btn_{ticket}")
-            close_btn.clicked.connect(
-                lambda _c, t=ticket, s=symbol: self._on_close_position(t, s)
-            )
-            self._positions_table.setCellWidget(row, _POS_COL_ACTION, close_btn)
+            entries.append(WatchlistEntry(
+                symbol=sym,
+                bid=bid,
+                ask=ask,
+                daily_change_pct=change,
+                signal=signal,
+                signal_confidence=conf,
+            ))
+        self._watchlist.update_entries(entries)
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -473,8 +521,17 @@ class CockpitView(QWidget):
         return self._hint_frame
 
     @property
-    def positions_table(self) -> QTableWidget:
-        return self._positions_table
+    def positions_table(self):
+        """QTableWidget der reichen Positions-Tabelle (fuer Tests und externe Zugriffe)."""
+        return self._pos_rich.table
+
+    @property
+    def daily_stats_card(self) -> _DailyStatsCard:
+        return self._daily_stats
+
+    @property
+    def total_stats_card(self) -> _TotalStatsCard:
+        return self._total_stats
 
     @property
     def lot_spinbox(self) -> QDoubleSpinBox:

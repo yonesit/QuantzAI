@@ -48,7 +48,8 @@ from pytestqt.qtbot import QtBot
 
 from gui.app import MainWindow, Section
 from gui.design.theme import ThemeManager, ThemeMode
-from gui.views.cockpit_view import CockpitView
+from gui.views.cockpit_view import CockpitView, WATCHLIST_SYMBOLS
+from gui.views.dashboard_view import DashboardSnapshot, PositionInfo
 from gui.widgets.chart_widget import CandleData, ChartWidget, Timeframe, _compute_ema, _compute_bollinger
 from gui.widgets.watchlist_widget import WatchlistEntry, WatchlistWidget
 
@@ -480,7 +481,8 @@ class TestCockpitView:
         assert not cockpit.sell_button.isChecked()
 
     def test_positions_table_columns(self, cockpit: CockpitView):
-        assert cockpit.positions_table.columnCount() == 8
+        # Reiche Positions-Tabelle: Symbol, Richtung, Lots, Eröffnung, P&L, [Schliessen]
+        assert cockpit.positions_table.columnCount() == 6
 
     def test_positions_table_empty_without_backend(self, cockpit: CockpitView):
         assert cockpit.positions_table.rowCount() == 0
@@ -629,3 +631,238 @@ class TestMainWindowCockpitIntegration:
         for section in Section:
             main_window.navigate_to(section)
             assert main_window.sidebar.current_section is section
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cockpit Trading-Stats (Positionen + Tages/Gesamt-Statistiken)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _snap_with_positions(**kw) -> DashboardSnapshot:
+    return DashboardSnapshot(
+        positions=[
+            PositionInfo(
+                ticket=kw.get("ticket", 42),
+                symbol=kw.get("symbol", "EURUSD"),
+                direction=kw.get("direction", "long"),
+                lot_size=kw.get("lot_size", 0.10),
+                open_price=kw.get("open_price", 1.0850),
+                current_pnl=kw.get("current_pnl", 25.50),
+            )
+        ],
+        today_trades=kw.get("today_trades", 3),
+        today_pnl=kw.get("today_pnl", 75.00),
+        today_win_rate=kw.get("today_win_rate", 0.667),
+        total_gross_profit=kw.get("total_gross_profit", 200.00),
+        total_gross_loss=kw.get("total_gross_loss", -80.00),
+        currency="€",
+    )
+
+
+class TestCockpitTradingStats:
+
+    def test_daily_stats_card_present(self, cockpit: CockpitView):
+        assert cockpit.daily_stats_card is not None
+
+    def test_total_stats_card_present(self, cockpit: CockpitView):
+        assert cockpit.total_stats_card is not None
+
+    def test_positions_table_has_six_columns(self, cockpit: CockpitView):
+        assert cockpit.positions_table.columnCount() == 6
+
+    def test_update_trading_stats_populates_positions(self, cockpit: CockpitView):
+        snap = _snap_with_positions()
+        cockpit.update_trading_stats(snap)
+        assert cockpit.positions_table.rowCount() == 1
+
+    def test_update_trading_stats_shows_symbol(self, cockpit: CockpitView):
+        snap = _snap_with_positions(symbol="XAUUSD")
+        cockpit.update_trading_stats(snap)
+        item = cockpit.positions_table.item(0, 0)
+        assert item is not None and "XAUUSD" in item.text()
+
+    def test_update_trading_stats_shows_pnl(self, cockpit: CockpitView):
+        snap = _snap_with_positions(current_pnl=25.50)
+        cockpit.update_trading_stats(snap)
+        pnl_item = cockpit.positions_table.item(0, 4)
+        assert pnl_item is not None
+        assert "25" in pnl_item.text()
+
+    def test_update_trading_stats_shows_daily_trades(self, cockpit: CockpitView):
+        snap = _snap_with_positions(today_trades=7)
+        cockpit.update_trading_stats(snap)
+        assert "7" in cockpit.daily_stats_card.trades_label.text()
+
+    def test_update_trading_stats_shows_daily_pnl(self, cockpit: CockpitView):
+        snap = _snap_with_positions(today_pnl=150.00)
+        cockpit.update_trading_stats(snap)
+        assert "150" in cockpit.daily_stats_card.pnl_label.text()
+
+    def test_update_trading_stats_shows_win_rate(self, cockpit: CockpitView):
+        snap = _snap_with_positions(today_win_rate=0.75)
+        cockpit.update_trading_stats(snap)
+        assert "75" in cockpit.daily_stats_card.winrate_label.text()
+
+    def test_update_trading_stats_shows_total_profit(self, cockpit: CockpitView):
+        snap = _snap_with_positions(total_gross_profit=200.00)
+        cockpit.update_trading_stats(snap)
+        assert "200" in cockpit.total_stats_card.profit_label.text()
+
+    def test_update_trading_stats_shows_total_loss(self, cockpit: CockpitView):
+        snap = _snap_with_positions(total_gross_loss=-80.00)
+        cockpit.update_trading_stats(snap)
+        assert "80" in cockpit.total_stats_card.loss_label.text()
+
+    def test_positions_table_close_button_emits_signal(self, cockpit: CockpitView, qtbot: QtBot):
+        snap = _snap_with_positions(ticket=99)
+        cockpit.update_trading_stats(snap)
+        close_btn = cockpit.positions_table.cellWidget(0, 5)
+        assert close_btn is not None
+        with qtbot.waitSignal(cockpit.position_close_requested, timeout=1000) as blocker:
+            close_btn.click()
+        assert blocker.args[0] == 99
+
+    def test_multiple_positions_multiple_rows(self, cockpit: CockpitView):
+        snap = DashboardSnapshot(
+            positions=[
+                PositionInfo(ticket=1, symbol="EURUSD", direction="long", lot_size=0.1),
+                PositionInfo(ticket=2, symbol="XAUUSD", direction="short", lot_size=0.05),
+                PositionInfo(ticket=3, symbol="USDJPY", direction="long", lot_size=0.2),
+            ]
+        )
+        cockpit.update_trading_stats(snap)
+        assert cockpit.positions_table.rowCount() == 3
+
+    def test_empty_snap_clears_positions(self, cockpit: CockpitView):
+        cockpit.update_trading_stats(_snap_with_positions())
+        assert cockpit.positions_table.rowCount() == 1
+        cockpit.update_trading_stats(DashboardSnapshot())
+        assert cockpit.positions_table.rowCount() == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cockpit Watchlist-Befuellung
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mock_connector(bid=1.08500, ask=1.08520, day_open=1.08000) -> MagicMock:
+    conn = MagicMock()
+    conn.get_tick.return_value = {"bid": bid, "ask": ask}
+    import pandas as pd
+    from datetime import datetime, timezone
+    df = pd.DataFrame(
+        {"open": [day_open], "high": [day_open + 0.01],
+         "low": [day_open - 0.005], "close": [bid]},
+        index=[datetime.now(timezone.utc)],
+    )
+    conn.get_ohlcv_count.return_value = df
+    return conn
+
+
+class TestCockpitWatchlistPopulation:
+
+    def test_watchlist_symbols_constant(self):
+        assert "XAUUSD" in WATCHLIST_SYMBOLS
+        assert "EURUSD" in WATCHLIST_SYMBOLS
+        assert "USDJPY" in WATCHLIST_SYMBOLS
+        assert "GBPUSD" in WATCHLIST_SYMBOLS
+
+    def test_set_watchlist_connector_populates_four_symbols(self, cockpit: CockpitView):
+        conn = _mock_connector()
+        cockpit.set_watchlist_connector(conn)
+        assert cockpit.watchlist_widget.table.rowCount() == 4
+
+    def test_watchlist_shows_bid(self, cockpit: CockpitView):
+        conn = _mock_connector(bid=1.08500)
+        cockpit.set_watchlist_connector(conn)
+        # Find EURUSD row
+        tbl = cockpit.watchlist_widget.table
+        eurusd_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "EURUSD"
+        )
+        bid_item = tbl.item(eurusd_row, 1)
+        assert bid_item is not None
+        assert "1.085" in bid_item.text()
+
+    def test_watchlist_shows_ask(self, cockpit: CockpitView):
+        conn = _mock_connector(ask=1.08520)
+        cockpit.set_watchlist_connector(conn)
+        tbl = cockpit.watchlist_widget.table
+        eurusd_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "EURUSD"
+        )
+        ask_item = tbl.item(eurusd_row, 2)
+        assert ask_item is not None
+        assert "1.085" in ask_item.text()
+
+    def test_watchlist_shows_daily_change(self, cockpit: CockpitView):
+        conn = _mock_connector(bid=1.09000, day_open=1.08000)
+        cockpit.set_watchlist_connector(conn)
+        tbl = cockpit.watchlist_widget.table
+        eurusd_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "EURUSD"
+        )
+        change_item = tbl.item(eurusd_row, 3)
+        assert change_item is not None and change_item.text() != "–"
+
+    def test_watchlist_signal_provider_used_for_eurusd(self, cockpit: CockpitView):
+        conn = _mock_connector()
+        signal_providers = {
+            "EURUSD": lambda: {"signal": "long", "confidence": 0.82},
+            "XAUUSD": lambda: {"signal": "short", "confidence": 0.71},
+        }
+        cockpit.set_watchlist_connector(conn, signal_providers=signal_providers)
+        tbl = cockpit.watchlist_widget.table
+        eurusd_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "EURUSD"
+        )
+        sig_item = tbl.item(eurusd_row, 4)
+        assert sig_item is not None
+        assert "LONG" in sig_item.text()
+
+    def test_watchlist_no_model_for_unsupported_symbols(self, cockpit: CockpitView):
+        conn = _mock_connector()
+        # Nur EURUSD und XAUUSD haben Modelle
+        signal_providers = {
+            "EURUSD": lambda: {"signal": "flat", "confidence": 0.5},
+            "XAUUSD": lambda: {"signal": "flat", "confidence": 0.5},
+        }
+        cockpit.set_watchlist_connector(conn, signal_providers=signal_providers)
+        tbl = cockpit.watchlist_widget.table
+        # USDJPY hat kein Modell
+        usdjpy_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "USDJPY"
+        )
+        sig_item = tbl.item(usdjpy_row, 4)
+        assert sig_item is not None
+        assert "kein" in sig_item.text().lower() or "modell" in sig_item.text().lower()
+
+    def test_watchlist_click_switches_chart_symbol(
+        self, cockpit_with_backend: tuple[CockpitView, MagicMock], qtbot: QtBot
+    ):
+        view, backend = cockpit_with_backend
+        conn = _mock_connector()
+        view.set_watchlist_connector(conn)
+        tbl = view.watchlist_widget.table
+        xauusd_row = next(
+            r for r in range(tbl.rowCount())
+            if tbl.item(r, 0) and tbl.item(r, 0).text() == "XAUUSD"
+        )
+        with qtbot.waitSignal(view.watchlist_widget.symbol_selected, timeout=1000):
+            tbl.selectRow(xauusd_row)
+        assert view.active_symbol == "XAUUSD"
+
+    def test_connector_not_required_for_manual_update(self, cockpit: CockpitView):
+        """update_watchlist() funktioniert ohne set_watchlist_connector."""
+        cockpit.update_watchlist(_entries("EURUSD", "XAUUSD"))
+        assert cockpit.watchlist_widget.table.rowCount() == 2
+
+    def test_timer_started_after_set_connector(self, cockpit: CockpitView):
+        conn = _mock_connector()
+        assert not cockpit._watchlist_timer.isActive()
+        cockpit.set_watchlist_connector(conn)
+        assert cockpit._watchlist_timer.isActive()
+        cockpit._watchlist_timer.stop()

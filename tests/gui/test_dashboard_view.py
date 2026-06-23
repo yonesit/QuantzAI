@@ -700,8 +700,6 @@ class TestDashboardView:
         assert v.account_card is not None
         assert v.drawdown_gauge is not None
         assert v.risk_light is not None
-        assert v.daily_stats is not None
-        assert v.positions_table is not None
         assert v.signal_panel is not None
 
     def test_timer_fires_and_calls_backend(self, qtbot: QtBot, snap_full: DashboardSnapshot):

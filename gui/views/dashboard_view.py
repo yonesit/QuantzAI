@@ -884,16 +884,16 @@ class _SignalPanel(QFrame):
 
 class DashboardView(QScrollArea):
     """
-    Dashboard-Hauptansicht.
+    Dashboard-Hauptansicht – grobe Uebersicht des Konto- und Systemstatus.
 
     Zeigt auf einen Blick:
-      - Kontostand mit Tagesveraenderung
+      - Kontostand mit Tagesveraenderung und Equity
       - Drawdown-Gauge mit konfigurierbarer Warnschwelle
       - Risiko-Ampel (gruen/gelb/rot)
-      - Offene Positionen mit Live-P&L und Schließen-Button
-      - Heutige Statistiken aus TradeJournal
       - Aktuelle Signale aus SignalModel
       - Candlestick-Chart fuer Marktbeobachtung
+
+    Positionen, Tages- und Gesamtstatistiken befinden sich im Cockpit.
 
     Parameters
     ----------
@@ -906,7 +906,7 @@ class DashboardView(QScrollArea):
     # Signal wenn Daten abgerufen wurden (fuer Tests und UI-Updates)
     data_refreshed = Signal(DashboardSnapshot)
 
-    # Emittiert wenn Nutzer eine Position schliessen will (ticket)
+    # Behalten fuer Rueckwaertskompatibilitaet mit run_gui_bot.py
     position_close_requested = Signal(int)
 
     def __init__(
@@ -938,9 +938,6 @@ class DashboardView(QScrollArea):
         self._chart_timer = QTimer(self)
         self._chart_timer.timeout.connect(self._refresh_chart)
 
-        # Positions-Close-Signal hochbubbling
-        self._positions.close_requested.connect(self.position_close_requested)
-
         # Initialen Zustand anzeigen
         self._apply_snapshot(self._last_snap)
 
@@ -968,18 +965,6 @@ class DashboardView(QScrollArea):
             top_row.addWidget(w)
 
         root.addLayout(top_row)
-
-        # ── Tages-Statistiken ─────────────────────────────────────────────────
-        self._daily_stats = _DailyStatsCard()
-        root.addWidget(self._daily_stats)
-
-        # ── Gesamt-Statistiken (realisierter P&L seit Teststart) ─────────────
-        self._total_stats = _TotalStatsCard()
-        root.addWidget(self._total_stats)
-
-        # ── Offene Positionen ────────────────────────────────────────────────
-        self._positions = _PositionsTable()
-        root.addWidget(self._positions)
 
         # ── Markt-Chart ──────────────────────────────────────────────────────
         chart_card = _card()
@@ -1013,9 +998,6 @@ class DashboardView(QScrollArea):
         self._account.refresh(snap)
         self._drawdown.refresh(snap)
         self._risk_light.refresh(snap)
-        self._daily_stats.refresh(snap)
-        self._total_stats.refresh(snap)
-        self._positions.refresh(snap)
         self._signals.refresh(snap)
         self._updated_lbl.setText(f"Letzte Aktualisierung: {snap.updated_at[:19].replace('T', ' ')} UTC")
 
@@ -1064,18 +1046,6 @@ class DashboardView(QScrollArea):
     @property
     def risk_light(self) -> _RiskTrafficLight:
         return self._risk_light
-
-    @property
-    def daily_stats(self) -> _DailyStatsCard:
-        return self._daily_stats
-
-    @property
-    def total_stats(self) -> _TotalStatsCard:
-        return self._total_stats
-
-    @property
-    def positions_table(self) -> _PositionsTable:
-        return self._positions
 
     @property
     def signal_panel(self) -> _SignalPanel:
@@ -1137,20 +1107,16 @@ class DashboardView(QScrollArea):
 
     def connect_order_executor(self, relay) -> None:
         """
-        Verbindet einen OrderEventRelay fuer sofortige Positions-Updates.
-
-        Die Positions-Tabelle aktualisiert sich jetzt bei jeder neuen
-        oder geschlossenen Position ohne auf das naechste Polling zu warten.
+        Rueckwaertskompatibilitaet: Positionen werden jetzt im Cockpit verwaltet.
+        Methode bleibt erhalten damit bestehende Aufrufer nicht crashen.
         """
         relay.order_opened.connect(self.on_order_opened)
         relay.order_closed.connect(self.on_order_closed)
 
     @Slot(dict)
-    def on_order_opened(self, order: dict) -> None:
-        """Wird unmittelbar nach open_position() aufgerufen."""
-        self._positions.add_position(order)
+    def on_order_opened(self, order: dict) -> None:  # noqa: ARG002
+        """No-op: Positionen werden im Cockpit verwaltet."""
 
     @Slot(dict)
-    def on_order_closed(self, order: dict) -> None:
-        """Wird unmittelbar nach close_position() aufgerufen."""
-        self._positions.remove_position(order.get("ticket"))
+    def on_order_closed(self, order: dict) -> None:  # noqa: ARG002
+        """No-op: Positionen werden im Cockpit verwaltet."""
