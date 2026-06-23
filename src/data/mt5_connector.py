@@ -381,7 +381,7 @@ class MT5Connector:
         """
         Gibt Broker-Informationen zu einem Symbol zurueck.
 
-        Returns dict mit: point, digits, spread, swap_long, swap_short
+        Returns dict mit: point, digits, spread, swap_long, swap_short, contract_size
         """
         if not self.is_connected:
             raise MT5ConnectionError("Nicht verbunden.")
@@ -394,12 +394,31 @@ class MT5Connector:
             raise MT5DataError(f"Symbol nicht gefunden: {symbol} | {err}")
 
         return {
-            "point":      info.point,
-            "digits":     info.digits,
-            "spread":     info.spread,
-            "swap_long":  info.swap_long,
-            "swap_short": info.swap_short,
+            "point":         info.point,
+            "digits":        info.digits,
+            "spread":        info.spread,
+            "swap_long":     info.swap_long,
+            "swap_short":    info.swap_short,
+            "contract_size": info.trade_contract_size,
         }
+
+    def get_tick(self, symbol: str) -> dict:
+        """
+        Gibt den aktuellen Bid/Ask-Kurs fuer ein Symbol zurueck.
+
+        Returns dict mit: bid, ask
+        """
+        if not self.is_connected:
+            raise MT5ConnectionError("Nicht verbunden.")
+
+        mt5 = _load_mt5()
+        tick = mt5.symbol_info_tick(symbol)
+
+        if tick is None:
+            err = mt5.last_error()
+            raise MT5DataError(f"Kein Tick fuer {symbol} | {err}")
+
+        return {"bid": float(tick.bid), "ask": float(tick.ask)}
 
     def get_account_info(self) -> dict:
         """

@@ -714,6 +714,43 @@ def build_portfolio_stack(
 
 
 # ---------------------------------------------------------------------------
+# P&L-Berechnung (pure Funktion – testbar ohne MT5/Qt)
+# ---------------------------------------------------------------------------
+
+def calc_unrealized_pnl(
+    direction: str,
+    open_price: float,
+    current_bid: float,
+    current_ask: float,
+    lot_size: float,
+    contract_size: float,
+) -> float:
+    """
+    Berechnet den unrealisierten Gewinn/Verlust einer offenen Position.
+
+    Formel (MT5-Konvention):
+      BUY  : (bid - open_price)  * lot_size * contract_size
+      SELL : (open_price - ask)  * lot_size * contract_size
+
+    Parameters
+    ----------
+    direction     : "buy" oder "sell"
+    open_price    : Eroeffnungskurs der Position
+    current_bid   : Aktueller Bid-Kurs des Symbols
+    current_ask   : Aktueller Ask-Kurs des Symbols
+    lot_size      : Lot-Groesse der Position
+    contract_size : Kontraktgroesse (z.B. 100 000 fuer EURUSD, 100 fuer XAUUSD)
+
+    Returns
+    -------
+    float – positiv = Gewinn, negativ = Verlust (in Konto-Waehrung)
+    """
+    if direction == "buy":
+        return (current_bid - open_price) * lot_size * contract_size
+    return (open_price - current_ask) * lot_size * contract_size
+
+
+# ---------------------------------------------------------------------------
 # Dashboard-Backend mit Live-Positionen
 # ---------------------------------------------------------------------------
 
@@ -721,11 +758,23 @@ class _LiveDashboardBackend:
     """
     DashboardBackend fuer Demo-Live-Modus.
     Kombiniert MT5-Kontodaten mit echten offenen Positionen aus dem OrderExecutor.
+    Berechnet unrealisierten P&L per Position mit aktuellem MT5-Tick-Kurs.
     """
 
     def __init__(self, connector, order_executor) -> None:
         self._connector = connector
         self._executor  = order_executor
+        self._contract_size_cache: dict[str, float] = {}
+
+    def _get_contract_size(self, symbol: str) -> float:
+        """Gibt die Kontraktgroesse des Symbols zurueck (gecacht)."""
+        if symbol not in self._contract_size_cache:
+            try:
+                info = self._connector.get_symbol_info(symbol)
+                self._contract_size_cache[symbol] = float(info.get("contract_size", 100_000.0))
+            except Exception:  # noqa: BLE001
+                self._contract_size_cache[symbol] = 100_000.0
+        return self._contract_size_cache[symbol]
 
     def fetch_snapshot(self):
         from gui.views.dashboard_view import DashboardSnapshot, PositionInfo
@@ -738,14 +787,34 @@ class _LiveDashboardBackend:
         try:
             is_paper = not getattr(self._executor, "_live", True)
             for p in self._executor.get_open_positions():
-                sym = f"[P] {p['symbol']}" if is_paper else p["symbol"]
+                raw_sym = p["symbol"]
+                sym     = f"[P] {raw_sym}" if is_paper else raw_sym
+                op      = p.get("open_price") or 0.0
+
+                # Unrealisierten P&L mit aktuellem MT5-Kurs berechnen
+                pnl: float | None = p.get("current_pnl")   # Live: kommt von MT5
+                if pnl is None and op:
+                    try:
+                        tick          = self._connector.get_tick(raw_sym)
+                        contract_size = self._get_contract_size(raw_sym)
+                        pnl = calc_unrealized_pnl(
+                            direction=p["direction"],
+                            open_price=op,
+                            current_bid=tick["bid"],
+                            current_ask=tick["ask"],
+                            lot_size=p["lot_size"],
+                            contract_size=contract_size,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
                 positions.append(PositionInfo(
                     ticket=p["ticket"],
                     symbol=sym,
                     direction=p["direction"],
                     lot_size=p["lot_size"],
-                    open_price=p.get("open_price") or 0.0,
-                    current_pnl=p.get("current_pnl"),
+                    open_price=op or None,
+                    current_pnl=pnl,
                 ))
         except Exception:  # noqa: BLE001
             pass

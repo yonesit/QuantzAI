@@ -27,6 +27,7 @@ from scripts.run_gui_bot import (
     build_trading_stack,
     build_portfolio_stack,
     MultiSymbolOrchestrator,
+    calc_unrealized_pnl,
 )
 
 
@@ -858,3 +859,131 @@ class TestMainEarlyExit:
         from scripts.run_gui_bot import main
         rc = main(["--config", "config/config.yaml"])
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# calc_unrealized_pnl – pure Funktion, keine externe Abhaengigkeit
+# ---------------------------------------------------------------------------
+
+class TestCalcUnrealizedPnl:
+    """Testet die P&L-Berechnung fuer offene Positionen (BUY/SELL, Gewinn/Verlust)."""
+
+    # ── BUY-Positionen ───────────────────────────────────────────────────────
+
+    def test_buy_profit(self):
+        """BUY: Kurs steigt -> positiver P&L."""
+        pnl = calc_unrealized_pnl(
+            direction="buy",
+            open_price=1.0800,
+            current_bid=1.0900,
+            current_ask=1.0902,
+            lot_size=0.1,
+            contract_size=100_000,
+        )
+        assert abs(pnl - 100.0) < 0.001  # (1.0900 - 1.0800) * 0.1 * 100_000
+
+    def test_buy_loss(self):
+        """BUY: Kurs faellt -> negativer P&L."""
+        pnl = calc_unrealized_pnl(
+            direction="buy",
+            open_price=1.0900,
+            current_bid=1.0800,
+            current_ask=1.0802,
+            lot_size=0.1,
+            contract_size=100_000,
+        )
+        assert abs(pnl - (-100.0)) < 0.001  # (1.0800 - 1.0900) * 0.1 * 100_000
+
+    def test_buy_breakeven(self):
+        """BUY: Kurs unveraendert -> P&L nahe Null."""
+        pnl = calc_unrealized_pnl(
+            direction="buy",
+            open_price=1.0850,
+            current_bid=1.0850,
+            current_ask=1.0852,
+            lot_size=1.0,
+            contract_size=100_000,
+        )
+        assert abs(pnl) < 0.001
+
+    # ── SELL-Positionen ──────────────────────────────────────────────────────
+
+    def test_sell_profit(self):
+        """SELL: Kurs faellt -> positiver P&L."""
+        pnl = calc_unrealized_pnl(
+            direction="sell",
+            open_price=1.0900,
+            current_bid=1.0798,
+            current_ask=1.0800,
+            lot_size=0.1,
+            contract_size=100_000,
+        )
+        assert abs(pnl - 100.0) < 0.001  # (1.0900 - 1.0800) * 0.1 * 100_000
+
+    def test_sell_loss(self):
+        """SELL: Kurs steigt -> negativer P&L."""
+        pnl = calc_unrealized_pnl(
+            direction="sell",
+            open_price=1.0800,
+            current_bid=1.0898,
+            current_ask=1.0900,
+            lot_size=0.1,
+            contract_size=100_000,
+        )
+        assert abs(pnl - (-100.0)) < 0.001  # (1.0800 - 1.0900) * 0.1 * 100_000
+
+    def test_sell_breakeven(self):
+        """SELL: Kurs unveraendert -> P&L nahe Null."""
+        pnl = calc_unrealized_pnl(
+            direction="sell",
+            open_price=1.0850,
+            current_bid=1.0848,
+            current_ask=1.0850,
+            lot_size=1.0,
+            contract_size=100_000,
+        )
+        assert abs(pnl) < 0.001
+
+    # ── XAUUSD (Gold, contract_size=100) ────────────────────────────────────
+
+    def test_xauusd_buy_profit(self):
+        """XAUUSD BUY: Gold steigt 1 USD pro Oz -> 1 USD P&L bei 0.01 Lots."""
+        pnl = calc_unrealized_pnl(
+            direction="buy",
+            open_price=1900.00,
+            current_bid=1901.00,
+            current_ask=1901.10,
+            lot_size=0.01,
+            contract_size=100,
+        )
+        assert abs(pnl - 1.0) < 0.001  # (1901.00 - 1900.00) * 0.01 * 100
+
+    def test_xauusd_sell_profit(self):
+        """XAUUSD SELL: Gold faellt 1 USD pro Oz -> 1 USD P&L bei 0.01 Lots."""
+        pnl = calc_unrealized_pnl(
+            direction="sell",
+            open_price=1901.00,
+            current_bid=1899.90,
+            current_ask=1900.00,
+            lot_size=0.01,
+            contract_size=100,
+        )
+        assert abs(pnl - 1.0) < 0.001  # (1901.00 - 1900.00) * 0.01 * 100
+
+    # ── Vorzeichen-Sicherheit ────────────────────────────────────────────────
+
+    def test_buy_pnl_positive_when_bid_above_open(self):
+        pnl = calc_unrealized_pnl("buy", 1.0, 1.1, 1.102, 1.0, 100_000)
+        assert pnl > 0
+
+    def test_buy_pnl_negative_when_bid_below_open(self):
+        pnl = calc_unrealized_pnl("buy", 1.1, 1.0, 1.002, 1.0, 100_000)
+        assert pnl < 0
+
+    def test_sell_pnl_positive_when_ask_below_open(self):
+        pnl = calc_unrealized_pnl("sell", 1.1, 0.998, 1.0, 1.0, 100_000)
+        assert pnl > 0
+
+    def test_sell_pnl_negative_when_ask_above_open(self):
+        pnl = calc_unrealized_pnl("sell", 1.0, 1.098, 1.1, 1.0, 100_000)
+        assert pnl < 0
