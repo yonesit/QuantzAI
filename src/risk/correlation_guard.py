@@ -161,7 +161,13 @@ class CorrelationGuard:
             pos_dir = pos.get("direction", "").lower()
 
             if pos_sym == symbol:
-                continue  # gleiches Symbol – Korrelationsregel nicht anwendbar
+                # Gleiches Symbol: nie zweite Position oeffnen (verhindert Duplikate)
+                logger.warning(
+                    "CorrelationGuard: Position abgelehnt | {sym} {dir} "
+                    "– bereits eine offene Position fuer dieses Symbol vorhanden",
+                    sym=symbol, dir=direction,
+                )
+                return False
 
             corr = self.get_correlation(symbol, pos_sym)
 

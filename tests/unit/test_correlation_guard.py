@@ -287,14 +287,21 @@ class TestCanOpenPosition:
         ]
         assert guard.can_open_position("A", "long", open_pos) is True
 
-    def test_same_symbol_in_open_positions_ignored(self, tmp_path):
-        """Gleiche Instrument-Eintrag in open_positions wird uebersprungen."""
+    def test_same_symbol_blocks_duplicate_position(self, tmp_path):
+        """Gleiches Symbol bereits offen → zweite Position wird abgelehnt (Duplikat-Schutz)."""
         guard = _guard(tmp_path)
-        # Kein Korrelations-Eintrag noetig – gleiche Symbole werden nicht geprueft
         result = guard.can_open_position(
             "EURUSD", "long", [{"symbol": "EURUSD", "direction": "long"}]
         )
-        assert result is True
+        assert result is False
+
+    def test_same_symbol_opposite_direction_also_blocked(self, tmp_path):
+        """Gleiches Symbol offen (andere Richtung) → ebenfalls abgelehnt (kein Hedging)."""
+        guard = _guard(tmp_path)
+        result = guard.can_open_position(
+            "EURUSD", "short", [{"symbol": "EURUSD", "direction": "long"}]
+        )
+        assert result is False
 
     # ── Richtungs-Normalisierung ──────────────────────────────────────────────
 

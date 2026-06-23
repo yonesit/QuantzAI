@@ -84,6 +84,7 @@ class OrderExecutor:
         # Paper-Trading: In-Memory-Positionen {ticket -> position_dict}
         self._paper_positions: dict[int, dict] = {}
         self._next_ticket: int = 1
+        self._load_paper_trades()
         # Live-Trading: Ticket -> Journal-Trade-ID fuer spaeteres Close
         self._journal_ticket_map: dict[int, int] = {}
 
@@ -998,6 +999,28 @@ class OrderExecutor:
                 )
 
         return closed
+
+    def _load_paper_trades(self) -> None:
+        """Laedt bestehende Paper-Trades aus JSON in _paper_positions (Neustart-Persistenz)."""
+        if self._live or not self._paper_path.exists():
+            return
+        try:
+            with open(self._paper_path, encoding="utf-8") as f:
+                trades = json.load(f)
+            for trade in trades:
+                ticket = trade.get("ticket")
+                if ticket is None:
+                    continue
+                self._paper_positions[int(ticket)] = trade
+                if int(ticket) >= self._next_ticket:
+                    self._next_ticket = int(ticket) + 1
+            open_count = sum(1 for t in trades if t.get("status") == "open")
+            logger.info(
+                "[PAPER] {n} Trades geladen ({o} offen) aus {p}",
+                n=len(trades), o=open_count, p=self._paper_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[PAPER] Laden von paper_trades.json fehlgeschlagen: {e}", e=exc)
 
     def _write_paper_trades(self) -> None:
         """Schreibt alle Paper-Trades atomar in die JSON-Datei."""

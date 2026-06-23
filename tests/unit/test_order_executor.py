@@ -796,6 +796,59 @@ class TestCheckPaperSLTP:
         cb.assert_called_once()
 
 
+class TestLoadPaperTrades:
+
+    def test_loads_open_positions_on_init(self, tmp_path: Path):
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps([{
+            "ticket": 5, "symbol": "EURUSD", "direction": "buy",
+            "lot_size": 0.1, "sl_price": 1.07, "tp_price": 1.10,
+            "open_price": 1.08, "open_time": "2026-06-23T10:00:00+00:00",
+            "close_price": None, "close_time": None, "status": "open",
+        }]), encoding="utf-8")
+        conn = MagicMock()
+        ex = OrderExecutor(connector=conn, paper_trades_path=path)
+        assert 5 in ex._paper_positions
+        assert ex._paper_positions[5]["status"] == "open"
+
+    def test_next_ticket_above_loaded(self, tmp_path: Path):
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps([
+            {"ticket": 10, "status": "open", "symbol": "EURUSD", "direction": "buy",
+             "lot_size": 0.1, "open_price": 1.08, "sl_price": 1.07, "tp_price": 1.10,
+             "open_time": None, "close_price": None, "close_time": None},
+            {"ticket": 11, "status": "closed", "symbol": "EURUSD", "direction": "buy",
+             "lot_size": 0.1, "open_price": 1.08, "sl_price": 1.07, "tp_price": 1.10,
+             "open_time": None, "close_price": 1.09, "close_time": None, "pnl": 100.0},
+        ]), encoding="utf-8")
+        conn = MagicMock()
+        ex = OrderExecutor(connector=conn, paper_trades_path=path)
+        assert ex._next_ticket == 12
+
+    def test_no_file_starts_empty(self, tmp_path: Path):
+        conn = MagicMock()
+        ex = OrderExecutor(connector=conn, paper_trades_path=tmp_path / "missing.json")
+        assert ex._paper_positions == {}
+        assert ex._next_ticket == 1
+
+    def test_check_sl_tp_monitors_loaded_positions(self, tmp_path: Path):
+        path = tmp_path / "t.json"
+        path.write_text(json.dumps([{
+            "ticket": 3, "symbol": "EURUSD", "direction": "buy",
+            "lot_size": 0.1, "open_price": 1.0800,
+            "sl_price": 1.0700, "tp_price": 1.0900,
+            "open_time": "2026-06-23T10:00:00+00:00",
+            "close_price": None, "close_time": None, "status": "open",
+        }]), encoding="utf-8")
+        conn = MagicMock()
+        conn.get_tick.return_value = {"bid": 1.0905, "ask": 1.0907}
+        conn.get_symbol_info.return_value = {"contract_size": 100_000.0}
+        ex = OrderExecutor(connector=conn, paper_trades_path=path)
+        closed = ex.check_paper_sl_tp()
+        assert len(closed) == 1
+        assert closed[0]["ticket"] == 3
+
+
 class TestMarkProfitLock70:
 
     def test_sets_flag_on_open_position(self, tmp_path: Path):
