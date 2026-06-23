@@ -368,6 +368,8 @@ class TradingOrchestrator:
         result["ticket"]   = order.get("ticket")
         result["lot_size"] = lot_size
         result["reason"]   = "signal_executed"
+        if not getattr(self._executor, "_live", True):
+            result["is_paper"] = True
 
         if self._audit_log is not None:
             self._audit_log.log_order(order)

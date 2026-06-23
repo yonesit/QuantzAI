@@ -14,8 +14,8 @@ Startet:
   - MeanReversionModel (EURUSD H4, neuestes models/mean_reversion_model*.joblib)
   - Echte PreTradeCheck (EconomicCalendar + Spread-Filter)
   - Gemeinsame RiskGuard / PositionSizer / CorrelationGuard / AuditLog
-  - OrderExecutor im Demo-Live-Modus (echte Positionen auf Demo-Konto)
-  - CONFIRM_REQUIRED: Bot fragt per GUI-Banner vor jedem Trade nach Bestaetigung
+  - OrderExecutor im Paper-Modus (simulierte Positionen, KEIN echtes Geld)
+  - AUTONOMOUS: Bot handelt selbststaendig, keine Bestaetigung noetig (CONFIRM_AUTONOMOUS=yes)
   - ActivityLogWidget, OrderEventRelay alle verdrahtet
 
 Fehlschlag mit klarer Meldung wenn:
@@ -611,10 +611,10 @@ def build_portfolio_stack(
 
     audit_log = AuditLog(db_path=str(_ROOT / "data" / "processed" / "audit.db"))
 
-    os.environ.setdefault("CONFIRM_LIVE", "yes")
+    os.environ.setdefault("CONFIRM_AUTONOMOUS", "yes")
     order_executor = OrderExecutor(
         connector=connector,
-        live_trading_enabled=True,
+        live_trading_enabled=False,
         paper_trades_path=str(_ROOT / "data" / "processed" / "paper_trades.json"),
         audit_log=audit_log,
     )
@@ -656,7 +656,7 @@ def build_portfolio_stack(
         balance_getter=_balance_getter,
         timeframe="H4",
         signal_confidence_threshold=confidence,
-        mode=TradingMode.CONFIRM_REQUIRED,
+        mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
     )
 
@@ -688,7 +688,7 @@ def build_portfolio_stack(
         balance_getter=_balance_getter,
         timeframe="H4",
         signal_confidence_threshold=confidence,
-        mode=TradingMode.CONFIRM_REQUIRED,
+        mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
     )
 
@@ -699,7 +699,7 @@ def build_portfolio_stack(
 
     logger.info(
         "Portfolio-Stack bereit | XAUUSD H4 TF + EURUSD H4 MR | "
-        "50/50 Risiko | Modus=CONFIRM_REQUIRED | Demo-Live=True"
+        "50/50 Risiko | Modus=AUTONOMOUS | Paper-Modus=True (kein echtes Geld)"
     )
 
     return {
@@ -736,10 +736,12 @@ class _LiveDashboardBackend:
 
         positions: list[PositionInfo] = []
         try:
+            is_paper = not getattr(self._executor, "_live", True)
             for p in self._executor.get_open_positions():
+                sym = f"[P] {p['symbol']}" if is_paper else p["symbol"]
                 positions.append(PositionInfo(
                     ticket=p["ticket"],
-                    symbol=p["symbol"],
+                    symbol=sym,
                     direction=p["direction"],
                     lot_size=p["lot_size"],
                     open_price=p.get("open_price", 0.0),
@@ -824,7 +826,7 @@ def main(argv=None) -> int:
 
     logger.info(
         "MT5 verbunden | XAUUSD-Modell: {xm} | EURUSD-MR: {em} | "
-        "Modus: CONFIRM_REQUIRED | Demo-Live: True",
+        "Modus: AUTONOMOUS | Paper: True",
         xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
     )
 
@@ -850,7 +852,7 @@ def main(argv=None) -> int:
 
     # Verbindungsstatus sofort setzen
     window.trading_status_bar.set_connection(ConnectionStatus.CONNECTED)
-    window.trading_status_bar.set_trading_mode(GuiTradingMode.CONFIRM)
+    window.trading_status_bar.set_trading_mode(GuiTradingMode.AUTONOMOUS)
 
     # Account-Info im Dashboard (wird nach Stack-Aufbau durch Live-Backend ersetzt)
     try:
@@ -871,7 +873,6 @@ def main(argv=None) -> int:
             connector=connector,
             xauusd_model_path=xauusd_model_path,
             eurusd_mr_model_path=eurusd_mr_model_path,
-            confirmation_callback=window.confirmation_callback,
         )
     except StartupError as exc:
         logger.error("Stack-Aufbau fehlgeschlagen: {exc}", exc=exc)
@@ -899,7 +900,13 @@ def main(argv=None) -> int:
     )
 
     # Echtzeit-Order-Updates direkt ins Dashboard (ohne auf nächsten Poll zu warten)
-    relay.order_opened.connect(window.dashboard_view.on_order_opened)
+    # Paper-Modus: [P]-Prefix damit simulierte Positionen sofort erkennbar sind
+    def _on_paper_order_opened(order: dict) -> None:
+        window.dashboard_view.on_order_opened(
+            dict(order, symbol=f"[P] {order.get('symbol', '')}")
+        )
+    window._paper_order_open_cb = _on_paper_order_opened  # keep Qt reference alive
+    relay.order_opened.connect(window._paper_order_open_cb)
     relay.order_closed.connect(window.dashboard_view.on_order_closed)
 
     # Position schließen per Dashboard-Button
@@ -922,16 +929,16 @@ def main(argv=None) -> int:
         interval_seconds=args.interval,
     )
 
-    # Modus-Combo auf CONFIRM_REQUIRED vorwählen (Index 1)
-    window.bot_controls._mode_combo.setCurrentIndex(1)
+    # Modus-Combo auf AUTONOMOUS vorwählen (Index 2)
+    window.bot_controls._mode_combo.setCurrentIndex(2)
 
     logger.info(
         "GUI-Bot bereit. Klicke 'Start' in der Bot-Steuerung (Sidebar).\n"
         "  Portfolio    : XAUUSD H4 TF (SignalModel) + EURUSD H4 MR (MeanReversionModel)\n"
         "  XAUUSD-Modell: {xm}\n"
         "  EURUSD-Modell: {em}\n"
-        "  Modus        : CONFIRM_REQUIRED\n"
-        "  Demo-Live    : True  (echte MT5-Positionen auf Demo-Konto)\n"
+        "  Modus        : AUTONOMOUS (kein Bestaetigungs-Dialog)\n"
+        "  Paper-Modus  : True  (KEIN echtes Geld, nur simulierte Trades)\n"
         "  Intervall    : {iv}s",
         xm=xauusd_model_path.name, em=eurusd_mr_model_path.name, iv=args.interval,
     )

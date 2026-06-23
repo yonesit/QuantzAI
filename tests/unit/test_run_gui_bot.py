@@ -464,7 +464,7 @@ class TestBuildPortfolioStack:
 
         assert isinstance(stack["orchestrator"], MultiSymbolOrchestrator)
 
-    def test_mode_is_confirm_required(
+    def test_mode_is_autonomous(
         self, tmp_config, tmp_model, tmp_mr_model, minimal_connector
     ):
         from src.modes import TradingMode
@@ -480,7 +480,7 @@ class TestBuildPortfolioStack:
                 eurusd_mr_model_path=tmp_mr_model,
             )
 
-        assert stack["orchestrator"].mode == TradingMode.CONFIRM_REQUIRED
+        assert stack["orchestrator"].mode == TradingMode.AUTONOMOUS
 
     def test_confirmation_callback_forwarded_to_both(
         self, tmp_config, tmp_model, tmp_mr_model, minimal_connector

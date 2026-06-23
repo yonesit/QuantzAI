@@ -76,6 +76,7 @@ class CycleLogEntry:
     confidence: Optional[float] = None
     ticket:     Optional[int]   = None
     lot_size:   Optional[float] = None
+    is_paper:   bool            = False
 
     @property
     def category(self) -> str:
@@ -128,6 +129,7 @@ class CycleLogEntry:
             confidence=result.get("confidence"),
             ticket=result.get("ticket"),
             lot_size=result.get("lot_size"),
+            is_paper=bool(result.get("is_paper", False)),
         )
 
 
@@ -323,7 +325,10 @@ class ActivityLogWidget(QWidget):
                 parts.append(p)
             self._set_cell(row, 3, "  ".join(parts) if parts else "–", color)
 
-            self._set_cell(row, 4, entry.action, color)
+            action_text = entry.action
+            if entry.is_paper and entry.action.startswith("open_"):
+                action_text = f"{entry.action}  [PAPER-TRADE (simuliert)]"
+            self._set_cell(row, 4, action_text, color)
 
     def _set_cell(self, row: int, col: int, text: str, color: str) -> None:
         item = QTableWidgetItem(text)
