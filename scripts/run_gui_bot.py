@@ -31,6 +31,7 @@ Verwendung:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import threading
@@ -902,14 +903,18 @@ class _LiveDashboardBackend:
         except Exception:  # noqa: BLE001
             pass
 
-        # Gesamt-Gewinn / Gesamt-Verlust aus paper_trades.json berechnen
+        # Gesamt-Gewinn / Gesamt-Verlust direkt aus paper_trades.json lesen
+        # (_paper_positions ist nach Neustart leer – Datei ist die einzige Quelle)
         total_profit: float | None = None
         total_loss:   float | None = None
         try:
-            all_trades = list(
-                getattr(self._executor, "_paper_positions", {}).values()
-            )
-            total_profit, total_loss = _calc_total_stats(all_trades)
+            paper_path = getattr(self._executor, "_paper_path", None)
+            if paper_path is None:
+                paper_path = Path("data/processed/paper_trades.json")
+            if Path(paper_path).exists():
+                with open(paper_path, encoding="utf-8") as _f:
+                    all_trades = json.load(_f)
+                total_profit, total_loss = _calc_total_stats(all_trades)
         except Exception:  # noqa: BLE001
             pass
 
