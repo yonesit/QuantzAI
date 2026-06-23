@@ -896,6 +896,97 @@ class OrderExecutor:
                 return candidate
         return None
 
+    def check_paper_sl_tp(self) -> list[dict]:
+        """
+        Prueft alle offenen Paper-Positionen auf SL/TP-Treffer und schliesst sie.
+
+        Im Paper-Modus ueberwacht MT5 keine SL/TP (Positionen sind nicht real).
+        Diese Methode muss im Takt des Bots aufgerufen werden.
+
+        Returns
+        -------
+        Liste der geschlossenen Positions-Dicts (leer wenn nichts getroffen).
+        """
+        if self._live:
+            return []
+
+        closed: list[dict] = []
+        # Cache fuer Contract-Sizes um nicht pro Position die Broker-API abzufragen
+        _contract_cache: dict[str, float] = {}
+
+        for ticket, pos in list(self._paper_positions.items()):
+            if pos.get("status") != "open":
+                continue
+
+            symbol     = pos["symbol"]
+            direction  = pos["direction"]
+            sl_price   = pos.get("sl_price")
+            tp_price   = pos.get("tp_price")
+            open_price = pos.get("open_price") or 0.0
+            lot_size   = pos.get("lot_size", 0.0)
+
+            try:
+                tick = self._connector.get_tick(symbol)
+                bid  = float(tick["bid"])
+                ask  = float(tick["ask"])
+            except Exception:
+                continue
+
+            hit_sl      = False
+            hit_tp      = False
+            close_price: float | None = None
+
+            if direction == "buy":
+                close_price = bid
+                if sl_price and bid <= sl_price:
+                    hit_sl = True
+                elif tp_price and bid >= tp_price:
+                    hit_tp = True
+            else:  # sell
+                close_price = ask
+                if sl_price and ask >= sl_price:
+                    hit_sl = True
+                elif tp_price and ask <= tp_price:
+                    hit_tp = True
+
+            if not (hit_sl or hit_tp):
+                continue
+
+            # P&L berechnen
+            pnl: float | None = None
+            if open_price and close_price:
+                try:
+                    if symbol not in _contract_cache:
+                        info = self._connector.get_symbol_info(symbol) or {}
+                        _contract_cache[symbol] = float(info.get("contract_size", 100_000.0))
+                    contract_size = _contract_cache[symbol]
+                    if direction == "buy":
+                        pnl = (close_price - open_price) * lot_size * contract_size
+                    else:
+                        pnl = (open_price - close_price) * lot_size * contract_size
+                except Exception:
+                    pnl = None
+
+            reason = "TP" if hit_tp else "SL"
+            logger.info(
+                "[PAPER] {r} getroffen | {sym} {dir} | ticket={t} | "
+                "close={cp:.5f} | pnl={pnl}",
+                r=reason, sym=symbol, dir=direction, t=ticket,
+                cp=close_price,
+                pnl=f"{pnl:.2f}" if pnl is not None else "?",
+            )
+
+            try:
+                result = self._close_paper(ticket, close_price=close_price, pnl=pnl)
+                closed.append(result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[PAPER] SL/TP-Close fehlgeschlagen | ticket={t}: {e}",
+                    t=ticket, e=exc,
+                )
+
+        return closed
+
     def _write_paper_trades(self) -> None:
         """Schreibt alle Paper-Trades atomar in die JSON-Datei."""
         self._paper_path.parent.mkdir(parents=True, exist_ok=True)

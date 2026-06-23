@@ -242,11 +242,12 @@ class MultiSymbolOrchestrator:
     pairs : Liste von (symbol, TradingOrchestrator)-Tuples.
     """
 
-    def __init__(self, pairs: list, break_even_manager=None) -> None:
+    def __init__(self, pairs: list, break_even_manager=None, order_executor=None) -> None:
         self._pairs               = pairs          # [(symbol, orchestrator)]
         self._stop_event          = threading.Event()
         self._activity_callback   = None
         self._be_manager          = break_even_manager
+        self._executor            = order_executor  # für Paper-SL/TP-Überwachung
 
     # ── Oeffentliche Schnittstelle (wie TradingOrchestrator) ─────────────────
 
@@ -296,6 +297,21 @@ class MultiSymbolOrchestrator:
                                 "BreakEvenManager Fehler | {sym}: {e}",
                                 sym=symbol, e=_be_exc,
                             )
+
+                    # Paper-SL/TP-Überwachung nach jedem Symbol-Zyklus
+                    if self._executor is not None:
+                        try:
+                            closed = self._executor.check_paper_sl_tp()
+                            for c in closed:
+                                logger.info(
+                                    "Paper-Position automatisch geschlossen | "
+                                    "ticket={t} {sym} {dir} | pnl={pnl}",
+                                    t=c.get("ticket"), sym=c.get("symbol"),
+                                    dir=c.get("direction"),
+                                    pnl=f"{c.get('pnl', 0):.2f}" if c.get("pnl") is not None else "?",
+                                )
+                        except Exception as _sl_exc:  # noqa: BLE001
+                            logger.warning("Paper-SL/TP-Check Fehler: {e}", e=_sl_exc)
                 except KeyboardInterrupt:
                     logger.info("MultiSymbolOrchestrator: KeyboardInterrupt -> Shutdown")
                     self.stop()
@@ -717,6 +733,7 @@ def build_portfolio_stack(
             ("EURUSD", eurusd_orch),
         ],
         break_even_manager=be_manager,
+        order_executor=order_executor,
     )
 
     logger.info(

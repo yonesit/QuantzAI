@@ -665,3 +665,132 @@ class TestTrailingStopLive:
             ex.update_trailing_stop(42, current_price=1.0960)
 
         mt5.order_send.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  check_paper_sl_tp
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _executor_with_open_position(
+    tmp_path: Path,
+    *,
+    direction: str,
+    open_price: float,
+    sl_price: float,
+    tp_price: float,
+    lot_size: float = 0.1,
+    symbol: str = "EURUSD",
+    contract_size: float = 100_000.0,
+) -> tuple[OrderExecutor, MagicMock]:
+    conn = MagicMock()
+    type(conn).is_connected = PropertyMock(return_value=True)
+    conn.get_symbol_info.return_value = {"contract_size": contract_size}
+    ex = OrderExecutor(connector=conn, paper_trades_path=tmp_path / "pt.json")
+    ex.open_position(symbol, direction, lot_size, sl_price, tp_price, open_price=open_price)
+    return ex, conn
+
+
+class TestCheckPaperSLTP:
+    def test_no_hit_returns_empty(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+        )
+        conn.get_tick.return_value = {"bid": 1.1050, "ask": 1.1052}
+        result = ex.check_paper_sl_tp()
+        assert result == []
+        assert ex.get_open_positions()
+
+    def test_sl_hit_buy_closes_position(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+        )
+        conn.get_tick.return_value = {"bid": 1.0898, "ask": 1.0900}
+        result = ex.check_paper_sl_tp()
+        assert len(result) == 1
+        assert result[0]["status"] == "closed"
+        assert not ex.get_open_positions()
+
+    def test_tp_hit_buy_closes_position(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+        )
+        conn.get_tick.return_value = {"bid": 1.1102, "ask": 1.1104}
+        result = ex.check_paper_sl_tp()
+        assert len(result) == 1
+        assert result[0]["status"] == "closed"
+
+    def test_sl_hit_sell_closes_position(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="sell", open_price=1.1000,
+            sl_price=1.1100, tp_price=1.0900,
+        )
+        conn.get_tick.return_value = {"bid": 1.1098, "ask": 1.1102}
+        result = ex.check_paper_sl_tp()
+        assert len(result) == 1
+        assert result[0]["status"] == "closed"
+
+    def test_tp_hit_sell_closes_position(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="sell", open_price=1.1000,
+            sl_price=1.1100, tp_price=1.0900,
+        )
+        conn.get_tick.return_value = {"bid": 1.0898, "ask": 1.0900}
+        result = ex.check_paper_sl_tp()
+        assert len(result) == 1
+        assert result[0]["status"] == "closed"
+
+    def test_pnl_positive_on_tp_buy(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+            lot_size=0.1, contract_size=100_000.0,
+        )
+        conn.get_tick.return_value = {"bid": 1.1100, "ask": 1.1102}
+        result = ex.check_paper_sl_tp()
+        assert result[0]["pnl"] == pytest.approx(0.1 * 100_000.0 * (1.1100 - 1.1000), abs=0.01)
+
+    def test_pnl_negative_on_sl_buy(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+            lot_size=0.1, contract_size=100_000.0,
+        )
+        conn.get_tick.return_value = {"bid": 1.0900, "ask": 1.0902}
+        result = ex.check_paper_sl_tp()
+        assert result[0]["pnl"] == pytest.approx(0.1 * 100_000.0 * (1.0900 - 1.1000), abs=0.01)
+
+    def test_live_mode_returns_empty(self, tmp_path: Path):
+        conn = MagicMock()
+        type(conn).is_connected = PropertyMock(return_value=True)
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "yes"}):
+            ex = OrderExecutor(
+                connector=conn, live_trading_enabled=True,
+                paper_trades_path=tmp_path / "pt.json",
+            )
+        result = ex.check_paper_sl_tp()
+        assert result == []
+        conn.get_tick.assert_not_called()
+
+    def test_tick_error_skips_position(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+        )
+        conn.get_tick.side_effect = RuntimeError("no connection")
+        result = ex.check_paper_sl_tp()
+        assert result == []
+        assert ex.get_open_positions()
+
+    def test_close_fires_on_close_callback(self, tmp_path: Path):
+        ex, conn = _executor_with_open_position(
+            tmp_path, direction="buy", open_price=1.1000,
+            sl_price=1.0900, tp_price=1.1100,
+        )
+        cb = MagicMock()
+        ex.set_order_callbacks(on_open=None, on_close=cb)
+        conn.get_tick.return_value = {"bid": 1.1102, "ask": 1.1104}
+        ex.check_paper_sl_tp()
+        cb.assert_called_once()
