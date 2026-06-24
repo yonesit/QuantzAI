@@ -136,8 +136,8 @@ def main() -> int:
             p=mc_result["p_value"],
         )
 
-    # 7. Modell speichern
-    save_path = build_save_path(args.version, date.today())
+    # 7. Modell speichern (Timeframe im Dateinamen fuer M15/M30 etc.)
+    save_path = build_save_path(args.version, date.today(), timeframe=args.tf)
     model.save(save_path)
     logger.info("Fertig. Modell gespeichert: {path}", path=save_path)
 

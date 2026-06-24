@@ -350,8 +350,20 @@ class SignalModel:
         return float(arr.mean() / std * np.sqrt(252))
 
 
-def build_save_path(version: int, model_date: date | None = None) -> Path:
-    """Erstellt den Speicherpfad gemaess Namenskonvention."""
+def build_save_path(
+    version: int,
+    model_date: date | None = None,
+    timeframe: str | None = None,
+) -> Path:
+    """Erstellt den Speicherpfad gemaess Namenskonvention.
+
+    Timeframe wird im Dateinamen kodiert wenn angegeben und != 'H4',
+    damit find_newest_model(timeframe=...) ihn korrekt erkennt.
+    Beispiele:
+      H4  -> signal_model_v1_20260624.joblib  (Rueckwaertskompatibilitaet)
+      M15 -> signal_model_v1_M15_20260624.joblib
+    """
     d = model_date or date.today()
-    fname = f"signal_model_v{version}_{d.strftime('%Y%m%d')}.joblib"
+    tf_part = f"_{timeframe}" if timeframe and timeframe.upper() != "H4" else ""
+    fname = f"signal_model_v{version}{tf_part}_{d.strftime('%Y%m%d')}.joblib"
     return Path("models") / fname
