@@ -41,6 +41,12 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
+# Sekunden pro Kerze – fuer auto-Intervall-Berechnung
+_TF_INTERVAL: dict[str, int] = {
+    "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+    "H1": 3600, "H4": 14400, "D1": 86400,
+}
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -84,17 +90,25 @@ def _load_env(env_path: str = ".env") -> None:
 # Modell-Suche
 # ---------------------------------------------------------------------------
 
-def find_newest_model(model_dir: str | Path = "models") -> Path:
+def find_newest_model(model_dir: str | Path = "models", timeframe: str = "H4") -> Path:
     """
     Gibt den Pfad zum neuesten Signal-Modell zurueck.
-    Schlaegt mit StartupError fehl wenn kein Modell vorhanden ist.
+    Sucht zuerst timeframe-spezifische Modelle (z.B. signal_model_v1_M15_*.joblib),
+    faellt auf beliebiges Modell zurueck wenn keines gefunden wird.
     """
+    from loguru import logger
     d = Path(model_dir)
-    # _IS_ Modelle sind In-Sample-only, nicht fuer Live nutzen
+    # Timeframe-spezifisches Modell bevorzugen
+    tf_candidates = sorted(
+        [f for f in d.glob(f"signal_model_v*_{timeframe}_*.joblib") if "_IS_" not in f.name],
+        key=lambda f: f.stat().st_mtime, reverse=True,
+    )
+    if tf_candidates:
+        return tf_candidates[0]
+    # Fallback: beliebiges Modell (mit Warnung)
     candidates = sorted(
         [f for f in d.glob("signal_model_v*.joblib") if "_IS_" not in f.name],
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
+        key=lambda f: f.stat().st_mtime, reverse=True,
     )
     if not candidates:
         raise StartupError(
@@ -102,19 +116,31 @@ def find_newest_model(model_dir: str | Path = "models") -> Path:
             "Fuehre zuerst aus: python scripts/train_model.py --symbol XAUUSD\n"
             "Erwartetes Muster: models/signal_model_v1_YYYYMMDD.joblib"
         )
+    if timeframe != "H4":
+        logger.warning(
+            "Kein {tf}-spezifisches Modell gefunden – nutze H4-Modell {m}. "
+            "Fuer bessere Signale: Modell auf {tf}-Daten neu trainieren.",
+            tf=timeframe, m=candidates[0].name,
+        )
     return candidates[0]
 
 
-def find_newest_mr_model(model_dir: str | Path = "models") -> Path:
+def find_newest_mr_model(model_dir: str | Path = "models", timeframe: str = "H4") -> Path:
     """
     Gibt den Pfad zum neuesten MeanReversion-Modell zurueck.
-    Schlaegt mit StartupError fehl wenn kein MR-Modell vorhanden ist.
+    Sucht zuerst timeframe-spezifische Modelle.
     """
+    from loguru import logger
     d = Path(model_dir)
+    tf_candidates = sorted(
+        [f for f in d.glob(f"mean_reversion_model*_{timeframe}*.joblib")],
+        key=lambda f: f.stat().st_mtime, reverse=True,
+    )
+    if tf_candidates:
+        return tf_candidates[0]
     candidates = sorted(
         list(d.glob("mean_reversion_model*.joblib")),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
+        key=lambda f: f.stat().st_mtime, reverse=True,
     )
     if not candidates:
         raise StartupError(
@@ -122,6 +148,12 @@ def find_newest_mr_model(model_dir: str | Path = "models") -> Path:
             "Trainiere das MR-Modell und speichere es:\n"
             "  model.save('models/mean_reversion_model_YYYYMMDD.joblib')\n"
             "Erwartetes Muster: models/mean_reversion_model*.joblib"
+        )
+    if timeframe != "H4":
+        logger.warning(
+            "Kein {tf}-spezifisches MR-Modell gefunden – nutze H4-Modell {m}. "
+            "Fuer bessere Signale: MR-Modell auf {tf}-Daten neu trainieren.",
+            tf=timeframe, m=candidates[0].name,
         )
     return candidates[0]
 
@@ -538,6 +570,7 @@ def build_portfolio_stack(
     xauusd_model_path: Path,
     eurusd_mr_model_path: Path,
     confirmation_callback=None,
+    timeframe: str = "M15",
 ) -> dict:
     """
     Baut den Portfolio-Trading-Stack fuer zwei Symbole und verdrahtet alles.
@@ -582,13 +615,20 @@ def build_portfolio_stack(
     risk_cfg  = config.get("risk", {})
     model_cfg = config.get("model", {})
 
+    # ── Risiko-Parameter aus Config ────────────────────────────────────────
+    sl_multiplier      = risk_cfg.get("sl_atr_multiplier", 1.0)
+    tp_multiplier      = risk_cfg.get("tp_atr_multiplier", 1.0)
+    virtual_balance    = risk_cfg.get("virtual_account_balance", 1000.0)
+    be_threshold       = risk_cfg.get("break_even_threshold", 0.35)
+    be_spread_buf      = risk_cfg.get("break_even_spread_buffer_pips", 1.0)
+
     # ── Modelle laden ──────────────────────────────────────────────────────
-    logger.info("Lade XAUUSD H4 TF-Modell: {path}", path=xauusd_model_path)
+    logger.info("Lade XAUUSD {tf} TF-Modell: {path}", tf=timeframe, path=xauusd_model_path)
     xauusd_model = SignalModel.load(xauusd_model_path)
     logger.info("XAUUSD SignalModel geladen ({feats} Features)",
                 feats=len(xauusd_model._feature_names))
 
-    logger.info("Lade EURUSD H4 MR-Modell: {path}", path=eurusd_mr_model_path)
+    logger.info("Lade EURUSD {tf} MR-Modell: {path}", tf=timeframe, path=eurusd_mr_model_path)
     eurusd_model = MeanReversionModel.load(eurusd_mr_model_path)
     logger.info("EURUSD MeanReversionModel geladen")
 
@@ -630,6 +670,7 @@ def build_portfolio_stack(
     # 50/50: identische Risikoallokation pro Symbol
     position_sizer = PositionSizer(
         risk_per_trade_pct=risk_cfg.get("max_risk_per_trade_pct", 1.0),
+        sl_atr_multiplier=sl_multiplier,
     )
 
     # Gemeinsamer CorrelationGuard verhindert doppelte korrelierte Positionen
@@ -651,9 +692,12 @@ def build_portfolio_stack(
     def _balance_getter() -> float:
         try:
             info = connector.get_account_info()
-            return float(info.get("balance", 10_000.0))
+            real_balance = float(info.get("balance", 10_000.0))
         except Exception:  # noqa: BLE001
-            return 10_000.0
+            real_balance = 10_000.0
+        # Virtuelles Risikokapital: Position Sizing basiert auf 1000 EUR,
+        # nicht auf dem tatsaechlichen Kontostand (100x-Hebel-Simulation).
+        return min(real_balance, virtual_balance)
 
     def _price_getter(symbol: str) -> "float | None":
         try:
@@ -664,9 +708,9 @@ def build_portfolio_stack(
 
     confidence = model_cfg.get("confidence_threshold", 0.55)
 
-    # ── XAUUSD H4 – Standard-Features-Loader (23 Baseline-Features) ───────
+    # ── XAUUSD – Standard-Features-Loader ─────────────────────────────────
     def _xauusd_features_loader(symbol: str) -> "_pd.DataFrame | None":
-        pattern = str(Path(features_dir) / f"{symbol}_H4_*.parquet")
+        pattern = str(Path(features_dir) / f"{symbol}_{timeframe}_*.parquet")
         files   = sorted(_glob.glob(pattern))
         if not files:
             return None
@@ -688,17 +732,19 @@ def build_portfolio_stack(
         features_loader=_xauusd_features_loader,
         balance_getter=_balance_getter,
         price_getter=_price_getter,
-        timeframe="H4",
+        timeframe=timeframe,
+        sl_atr_multiplier=sl_multiplier,
+        tp_atr_multiplier=tp_multiplier,
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
     )
 
-    # ── EURUSD H4 – MR-Features-Loader (ergaenzt bb_pct_b etc.) ──────────
+    # ── EURUSD – MR-Features-Loader (ergaenzt bb_pct_b etc.) ─────────────
     _mr_instance = MeanReversionModel()
 
     def _eurusd_mr_features_loader(symbol: str) -> "_pd.DataFrame | None":
-        pattern = str(Path(features_dir) / f"{symbol}_H4_*.parquet")
+        pattern = str(Path(features_dir) / f"{symbol}_{timeframe}_*.parquet")
         files   = sorted(_glob.glob(pattern))
         if not files:
             return None
@@ -721,7 +767,9 @@ def build_portfolio_stack(
         features_loader=_eurusd_mr_features_loader,
         balance_getter=_balance_getter,
         price_getter=_price_getter,
-        timeframe="H4",
+        timeframe=timeframe,
+        sl_atr_multiplier=sl_multiplier,
+        tp_atr_multiplier=tp_multiplier,
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
@@ -732,8 +780,8 @@ def build_portfolio_stack(
     be_manager = BreakEvenManager(
         connector=connector,
         order_executor=order_executor,
-        break_even_threshold=risk_cfg.get("break_even_threshold", 0.5),
-        spread_buffer_pips=risk_cfg.get("break_even_spread_buffer_pips", 2.0),
+        break_even_threshold=be_threshold,
+        spread_buffer_pips=be_spread_buf,
     )
 
     portfolio_orch = MultiSymbolOrchestrator(
@@ -746,8 +794,11 @@ def build_portfolio_stack(
     )
 
     logger.info(
-        "Portfolio-Stack bereit | XAUUSD H4 TF + EURUSD H4 MR | "
-        "50/50 Risiko | Modus=AUTONOMOUS | Paper-Modus=True (kein echtes Geld)"
+        "Portfolio-Stack bereit | XAUUSD {tf} TF + EURUSD {tf} MR | "
+        "Virtuelles Kapital={vb} EUR | SL={sl}x ATR | TP={tp}x ATR | "
+        "BE-Threshold={be}% | Modus=AUTONOMOUS | Paper-Modus=True",
+        tf=timeframe, vb=virtual_balance,
+        sl=sl_multiplier, tp=tp_multiplier, be=int(be_threshold * 100),
     )
 
     return {
@@ -977,9 +1028,17 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument(
         "--eurusd-mr-model", default=None, dest="eurusd_mr_model",
-        help="EURUSD H4 MR-Modell (.joblib). Standard: neuestes mean_reversion_model* in models/",
+        help="EURUSD MR-Modell (.joblib). Standard: neuestes mean_reversion_model* in models/",
     )
-    p.add_argument("--interval", type=int, default=300, help="Sekunden zwischen Zyklen")
+    p.add_argument(
+        "--timeframe", default="M15",
+        choices=["M5", "M15", "M30", "H1", "H4"],
+        help="Kerzen-Zeitrahmen fuer beide Symbole (Standard: M15)",
+    )
+    p.add_argument(
+        "--interval", type=int, default=None,
+        help="Sekunden zwischen Zyklen (Standard: 1 Kerze des gewahlten Timeframes)",
+    )
     p.add_argument("--config",   default="config/config.yaml")
     return p.parse_args(argv)
 
@@ -995,14 +1054,19 @@ def main(argv=None) -> int:
 
     from loguru import logger
 
+    timeframe = args.timeframe
+    interval  = args.interval or _TF_INTERVAL.get(timeframe, 900)
+
     # ── Fruehzeitig pruefen ───────────────────────────────────────────────
     try:
         config = _load_config(args.config)
         xauusd_model_path    = (
-            Path(args.xauusd_model) if args.xauusd_model else find_newest_model()
+            Path(args.xauusd_model) if args.xauusd_model
+            else find_newest_model(timeframe=timeframe)
         )
         eurusd_mr_model_path = (
-            Path(args.eurusd_mr_model) if args.eurusd_mr_model else find_newest_mr_model()
+            Path(args.eurusd_mr_model) if args.eurusd_mr_model
+            else find_newest_mr_model(timeframe=timeframe)
         )
         if not xauusd_model_path.exists():
             raise StartupError(f"XAUUSD-Modell nicht gefunden: {xauusd_model_path}")
@@ -1022,8 +1086,9 @@ def main(argv=None) -> int:
         return 1
 
     logger.info(
-        "MT5 verbunden | XAUUSD-Modell: {xm} | EURUSD-MR: {em} | "
-        "Modus: AUTONOMOUS | Paper: True",
+        "MT5 verbunden | TF={tf} | Intervall={iv}s | "
+        "XAUUSD-Modell: {xm} | EURUSD-MR: {em} | Modus: AUTONOMOUS | Paper: True",
+        tf=timeframe, iv=interval,
         xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
     )
 
@@ -1070,6 +1135,7 @@ def main(argv=None) -> int:
             connector=connector,
             xauusd_model_path=xauusd_model_path,
             eurusd_mr_model_path=eurusd_mr_model_path,
+            timeframe=timeframe,
         )
     except StartupError as exc:
         logger.error("Stack-Aufbau fehlgeschlagen: {exc}", exc=exc)
@@ -1151,21 +1217,30 @@ def main(argv=None) -> int:
     window.bot_controls.set_orchestrator(
         stack["orchestrator"],
         stack["symbols"],
-        interval_seconds=args.interval,
+        interval_seconds=interval,
     )
 
     # Modus-Combo auf AUTONOMOUS vorwählen (Index 2)
     window.bot_controls._mode_combo.setCurrentIndex(2)
 
+    risk_cfg = config.get("risk", {})
     logger.info(
         "GUI-Bot bereit. Klicke 'Start' in der Bot-Steuerung (Sidebar).\n"
-        "  Portfolio    : XAUUSD H4 TF (SignalModel) + EURUSD H4 MR (MeanReversionModel)\n"
-        "  XAUUSD-Modell: {xm}\n"
-        "  EURUSD-Modell: {em}\n"
-        "  Modus        : AUTONOMOUS (kein Bestaetigungs-Dialog)\n"
-        "  Paper-Modus  : True  (KEIN echtes Geld, nur simulierte Trades)\n"
-        "  Intervall    : {iv}s",
-        xm=xauusd_model_path.name, em=eurusd_mr_model_path.name, iv=args.interval,
+        "  Portfolio       : XAUUSD {tf} TF (SignalModel) + EURUSD {tf} MR (MeanReversionModel)\n"
+        "  XAUUSD-Modell   : {xm}\n"
+        "  EURUSD-Modell   : {em}\n"
+        "  Timeframe       : {tf}  (Intervall: {iv}s)\n"
+        "  Virtuelles Kap. : {vb} EUR  (1 %% Risiko = {risk:.0f} EUR/Trade)\n"
+        "  SL/TP           : {sl}x / {tp}x ATR  |  Break-Even: {be}%% des TP-Weges\n"
+        "  Modus           : AUTONOMOUS (kein Bestaetigungs-Dialog)\n"
+        "  Paper-Modus     : True  (KEIN echtes Geld, nur simulierte Trades)",
+        tf=timeframe, iv=interval,
+        xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
+        vb=risk_cfg.get("virtual_account_balance", 1000.0),
+        risk=risk_cfg.get("virtual_account_balance", 1000.0) * risk_cfg.get("max_risk_per_trade_pct", 1.0) / 100,
+        sl=risk_cfg.get("sl_atr_multiplier", 1.0),
+        tp=risk_cfg.get("tp_atr_multiplier", 1.0),
+        be=int(risk_cfg.get("break_even_threshold", 0.35) * 100),
     )
 
     return app.exec()

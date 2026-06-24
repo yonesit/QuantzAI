@@ -1,12 +1,16 @@
-﻿# QuantzAI â€“ Hauptkonfiguration
-# Alle Parameter hier â€“ kein Hardcoding im Code
+# QuantzAI - Hauptkonfiguration
+# Alle Parameter hier - kein Hardcoding im Code
 
 data:
   symbols:
     - EURUSD
     - GBPUSD
     - USDJPY
+    - XAUUSD
   timeframes:
+    - M5
+    - M15
+    - M30
     - H1
     - H4
   history_years: 4
@@ -44,6 +48,11 @@ risk:
   max_correlation: 0.8
   correlation_window_days: 60
   spread_filter_pips: 3.0
+  virtual_account_balance: 1000.0        # Effektives Risikokapital (1 % = 10 EUR Risiko/Trade)
+  sl_atr_multiplier: 1.0                 # SL-Distanz (kleiner = engerer SL)
+  tp_atr_multiplier: 1.0                 # TP-Distanz (1:1 RR, Ziel < 20 EUR)
+  break_even_threshold: 0.35             # BE bei 35 % des TP-Weges (fruehzeitig sichern)
+  break_even_spread_buffer_pips: 1.0     # BE-Puffer ueber Eroeffnung (Pips)
 
 model:
   confidence_threshold: 0.55
