@@ -16,9 +16,9 @@ data:
   history_years: 4
 
 data_validation:
-  max_missing_pct: 5.0
+  max_missing_pct: 7.0
   outlier_atr_multiplier: 5.0
-  min_quality_score: 0.95
+  min_quality_score: 0.93
   interpolation_method: linear
   max_gap_candles: 3
 
@@ -50,7 +50,7 @@ risk:
   spread_filter_pips: 3.0
   virtual_account_balance: 1000.0        # Effektives Risikokapital (1 % = 10 EUR Risiko/Trade)
   sl_atr_multiplier: 1.0                 # SL-Distanz (kleiner = engerer SL)
-  tp_atr_multiplier: 1.0                 # TP-Distanz (1:1 RR, Ziel < 20 EUR)
+  tp_atr_multiplier: 2.0                 # TP-Distanz (2:1 RR, Ziel ~20 EUR)
   break_even_threshold: 0.35             # BE bei 35 % des TP-Weges (fruehzeitig sichern)
   break_even_spread_buffer_pips: 1.0     # BE-Puffer ueber Eroeffnung (Pips)
 

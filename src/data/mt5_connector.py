@@ -311,10 +311,21 @@ class MT5Connector:
 
         if rates is None or len(rates) == 0:
             err = mt5.last_error()
-            raise MT5DataError(
-                f"Keine Daten fuer {symbol} {tf_str} "
-                f"({start_utc} – {end_utc}) | MT5-Fehler: {err}"
-            )
+            # Broker-Limit-Fallback: copy_rates_range versagt fuer grosse/alte Bereiche
+            # (-2 = Invalid params).  copy_rates_from_pos liefert bis zu 99.999 Bars ab
+            # der aktuellen Kerze – wir filtern anschliessend auf das gewuenschte Fenster.
+            if err[0] == -2:
+                logger.warning(
+                    "copy_rates_range fehlgeschlagen fuer {sym} {tf} ({err}) – "
+                    "Fallback: copy_rates_from_pos(99999) und Datums-Filter",
+                    sym=symbol, tf=tf_str, err=err,
+                )
+                rates = mt5.copy_rates_from_pos(symbol, _TIMEFRAME_MAP[tf_str], 0, 99_999)
+            if rates is None or len(rates) == 0:
+                raise MT5DataError(
+                    f"Keine Daten fuer {symbol} {tf_str} "
+                    f"({start_utc} – {end_utc}) | MT5-Fehler: {err}"
+                )
 
         df = pd.DataFrame(rates)
 
@@ -329,9 +340,20 @@ class MT5Connector:
         cols = ["open", "high", "low", "close", "volume"]
         df = df[[c for c in cols if c in df.columns]]
 
+        # Datums-Filter (relevant wenn Fallback copy_rates_from_pos genutzt wurde)
+        df = df.loc[(df.index >= start_utc) & (df.index <= end_utc)]
+
+        if df.empty:
+            raise MT5DataError(
+                f"Keine Daten fuer {symbol} {tf_str} im Zeitraum "
+                f"{start_utc.date()} – {end_utc.date()} "
+                f"(Broker haelt fruehestens ab {df.index.min() if not df.empty else 'N/A'})."
+            )
+
         logger.info(
-            "MT5 OHLCV | symbol={symbol} tf={tf} | {n} Candles",
+            "MT5 OHLCV | symbol={symbol} tf={tf} | {n} Candles | {s} – {e}",
             symbol=symbol, tf=tf_str, n=len(df),
+            s=df.index.min().date(), e=df.index.max().date(),
         )
         return df
 

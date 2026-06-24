@@ -76,10 +76,12 @@ def _make_rates(n: int = 5) -> np.ndarray:
         ("spread",      np.int32),
         ("real_volume", np.int64),
     ])
-    now = int(datetime.now(timezone.utc).timestamp())
+    # Timestamps in der Vergangenheit – alle vor _dt(0)=now, damit der
+    # Datums-Filter in get_ohlcv (start_utc <= index <= end_utc) greift.
+    base = int((datetime.now(timezone.utc) - timedelta(hours=n + 1)).timestamp())
     arr = np.zeros(n, dtype=dtype)
     for i in range(n):
-        arr[i]["time"]        = now + i * 60
+        arr[i]["time"]        = base + i * 3600
         arr[i]["open"]        = 1.1000 + i * 0.0001
         arr[i]["high"]        = 1.1010 + i * 0.0001
         arr[i]["low"]         = 1.0990 + i * 0.0001

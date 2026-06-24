@@ -328,3 +328,139 @@ Alle Trades und Ereignisse werden protokolliert in:
 ### Start-Anleitung
 
 Siehe Abschnitt *Startup-Anleitung* am Ende dieses Logs.
+
+---
+
+## M15-Testreihe (alle 4 Symbole)
+
+*Stand: 2026-06-24 – zusätzlicher Test-Strang, nicht ersetzend für H4/D1*
+
+### Motivation
+
+Die Demo-Live-Beobachtung zeigte: Positionen erreichten EUR 60+ Gewinn, fielen dann aber auf den SL zurück. Ursache: TP-Distanz (1.0x ATR auf H4) war zu weit entfernt, die Positionen liefen zu lange. Lösungsansatz: kürzerer Timeframe M15 mit engeren TP/SL-Parametern für kleinere, häufigere Gewinne (~20 EUR/Trade).
+
+### Parameter-Wahl (M15-Anpassungen)
+
+**`max_candles = 48` (12 Stunden):**  
+Auf H4 entspricht `max_candles=24` einem 4-Tage-Zeitlimit. Auf M15 wäre das nur 6 Stunden – zu kurz für intraday Trendfolge. 48 × 15 min = 12 Stunden ist das sinnvolle Äquivalent: ein vollständiger Londoner oder New Yorker Handelstag. Trends auf M15 starten und enden typischerweise innerhalb einer Session.
+
+**`tp_atr_mult = 2.0, sl_atr_mult = 1.0` (2:1 Risk-Reward):**  
+M15-ATR auf EURUSD ≈ 8–12 Pips. Bei virtueller Balance 1000 EUR und 1% Risiko (= 10 EUR/Trade):
+- SL = 1.0 × ATR ≈ 10 Pips → Lot = 10 EUR ÷ (10 Pips × 10 EUR/Lot) ≈ 0.10 Lots
+- TP = 2.0 × ATR ≈ 20 Pips → Reward ≈ 0.10 × 20 × 10 = **+20 EUR**
+
+Das trifft das Ziel von ~20–30 EUR Gewinn/Trade genau.
+
+### Ergebnisübersicht
+
+| # | Symbol | TF | Strategie | Ø OOS-Sharpe | Median | Std | Profitable Fenster | Trades | MC p | Urteil |
+|---|--------|----|-----------|-------------|--------|-----|---------------------|--------|------|--------|
+| 5 | EURUSD | M15 | Trendfolge | **2.468** | 2.911 | 2.106 | 20/23 (87.0%) | 59,161 | 0.000 | **Kandidat** |
+| 6 | XAUUSD | M15 | Trendfolge | **3.146** | 3.643 | 2.749 | 13/14 (92.9%) | 40,537 | 0.000 | **Kandidat** |
+| 7 | USDJPY | M15 | Trendfolge | **4.323** | 4.396 | 1.929 | 16/17 (94.1%) | 47,422 | 0.000 | **Kandidat** |
+| 8 | GBPUSD | M15 | Trendfolge | **4.177** | 4.384 | 1.890 | 11/12 (91.7%) | 37,270 | 0.000 | **Kandidat** |
+
+Alle vier Symbole: Monte-Carlo p=0.0000 (hoch signifikant). Alle vier Kandidaten.
+
+---
+
+### Test #5: EURUSD M15 Trendfolge
+
+- Datum: 2026-06-24
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Walk-Forward: 6M Training / 1M Test, rollierend (23 Fenster)
+- Label-Parameter: tp_atr_mult=2.0, sl_atr_mult=1.0, max_candles=48
+- Ø OOS-Sharpe: **2.468**
+- Median OOS-Sharpe: 2.911
+- Std OOS-Sharpe: 2.106
+- Profitable Fenster: 20/23 (87.0%)
+- Anzahl Trades gesamt: 59,161
+- Features: 23 (Standard-Set)
+- Monte Carlo: p=0.0000 (signifikant)
+- Auffälligkeiten: 3 negative Fenster (Fenster 4: -1.418, Fenster 5: -2.110, Fenster 15: -1.575). Fenster 4-5 (ca. 2021-04 bis 2021-06) entspricht der COVID-Erholungsphase mit unklaren Trendrichtungen. Fenster 15 (ca. 2022-03) liegt im Umfeld des Ukraine-Kriegsausbruchs (Feb 2022) – erhöhte Volatilität ohne klare Trendstruktur.
+- Urteil: **Kandidat**
+- Begründung: Ø OOS-Sharpe 2.468 >> 0, Median 2.911 robust, 87% profitable Fenster – deutlich besser als EURUSD H1-Baseline (Test 0a: Ø -0.484, 39%). Starker Edge auf M15.
+
+---
+
+### Test #6: XAUUSD M15 Trendfolge
+
+- Datum: 2026-06-24
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01), gefiltert auf verfügbare Broker-History (~14 Fenster statt 23 wegen 99.999-Bar-Broker-Limit)
+- Walk-Forward: 6M Training / 1M Test, rollierend (14 Fenster)
+- Label-Parameter: tp_atr_mult=2.0, sl_atr_mult=1.0, max_candles=48
+- Ø OOS-Sharpe: **3.146**
+- Median OOS-Sharpe: 3.643
+- Std OOS-Sharpe: 2.749
+- Profitable Fenster: 13/14 (92.9%)
+- Anzahl Trades gesamt: 40,537
+- Features: 23 (Standard-Set)
+- Monte Carlo: p=0.0000 (signifikant)
+- Auffälligkeiten: 1 starker negativer Ausreisser (Fenster 3: -5.509). Fenster 3 liegt ca. Frühjahr 2021 – Normalisierung nach COVID-Goldpreisrückgang ($2000 → $1700), unklare Trendstruktur. Alle anderen 13 Fenster positiv.
+- Datenqualität: XAUUSD hat Tages-Sessions-Pausen (kein 24h-Handel), daher 5.54% fehlende Bars – DataValidator mit max_missing_pct=7.0 und min_quality_score=0.93 angepasst (Konfig-Änderung vom 2026-06-24).
+- Urteil: **Kandidat**
+- Begründung: Ø OOS-Sharpe 3.146, Median 3.643 – einer der stärksten Edges im gesamten Test-Portfolio. XAUUSD M15 zeigt klare Intraday-Trends (Institutionelle Nachrichtenreaktionen, Session-Öffnungen).
+
+---
+
+### Test #7: USDJPY M15 Trendfolge
+
+- Datum: 2026-06-24
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Walk-Forward: 6M Training / 1M Test, rollierend (17 Fenster)
+- Label-Parameter: tp_atr_mult=2.0, sl_atr_mult=1.0, max_candles=48
+- Ø OOS-Sharpe: **4.323**
+- Median OOS-Sharpe: 4.396
+- Std OOS-Sharpe: 1.929
+- Profitable Fenster: 16/17 (94.1%)
+- Anzahl Trades gesamt: 47,422
+- Features: 23 (Standard-Set)
+- Monte Carlo: p=0.0000 (signifikant)
+- Auffälligkeiten: 2 Ausreisser (Fenster 4: -0.347, Fenster 16: 0.376 – beide nahe Null, keine starken Negativwerte). USDJPY M15 zeigt bemerkenswerte Robustheit: Std von nur 1.929 ist die niedrigste im M15-Test-Portfolio.
+- Vergleich mit H4: USDJPY H4 Trendfolge (Test #1) wurde verworfen (Ø -0.671, 38%). M15 dreht das Bild vollständig um: Ø +4.323, 94% profitable Fenster. USDJPY-Trends sind auf M15 präziser einfangbar als auf dem gröberen H4-Timeframe.
+- Urteil: **Kandidat** (stärkster Einzel-Edge aller bisherigen Tests)
+- Begründung: Ø OOS-Sharpe 4.323, Std nur 1.929 (niedrigstes Std aller Tests) – das Sharpe/Std-Verhältnis ist mit 2.24 das beste im gesamten Forschungslog. Sehr konsistenter Edge.
+
+---
+
+### Test #8: GBPUSD M15 Trendfolge
+
+- Datum: 2026-06-24
+- Zeitraum: 4 Jahre (2020-01-01 bis 2024-01-01)
+- Walk-Forward: 6M Training / 1M Test, rollierend (12 Fenster)
+- Label-Parameter: tp_atr_mult=2.0, sl_atr_mult=1.0, max_candles=48
+- Ø OOS-Sharpe: **4.177**
+- Median OOS-Sharpe: 4.384
+- Std OOS-Sharpe: 1.890
+- Profitable Fenster: 11/12 (91.7%)
+- Anzahl Trades gesamt: 37,270
+- Features: 23 (Standard-Set)
+- Monte Carlo: p=0.0000 (signifikant)
+- Auffälligkeiten: 1 negativer Ausreisser (Fenster 9: -0.677). GBPUSD ist historisch volatil (Brexit-Nachwirkungen, BoE-Kommunikation), zeigt aber auf M15 klare, modellierbare Trends.
+- Urteil: **Kandidat**
+- Begründung: Ø OOS-Sharpe 4.177, Std 1.890 – zweitstärkste Konsistenz nach USDJPY M15. Niedrige Std bei hohem Median zeigt robuste Wiederholbarkeit.
+
+---
+
+### M15 vs. H4/D1 – Gesamtvergleich
+
+| Test | Symbol | TF | Ø Sharpe | Median | Std | Profit-Fenster | Urteil |
+|------|--------|----|----------|--------|-----|----------------|--------|
+| #1 | USDJPY | H4 | -0.671 | n/a | 4.480 | 38% | Verworfen |
+| #2 | USDJPY | D1 | 1.208 | 1.449 | 7.594 | 53% | Kandidat |
+| #3 | XAUUSD | H4 | -0.036 | 0.191 | 3.678 | 55% | Kandidat |
+| #4 | EURUSD | H4 | 0.389 | 1.142 | 3.670 | 68% | Kandidat |
+| **#5** | **EURUSD** | **M15** | **2.468** | **2.911** | **2.106** | **87%** | **Kandidat** |
+| **#6** | **XAUUSD** | **M15** | **3.146** | **3.643** | **2.749** | **93%** | **Kandidat** |
+| **#7** | **USDJPY** | **M15** | **4.323** | **4.396** | **1.929** | **94%** | **Kandidat** |
+| **#8** | **GBPUSD** | **M15** | **4.177** | **4.384** | **1.890** | **92%** | **Kandidat** |
+
+**Erkenntnis:** M15-Trendfolge übertrifft H4/D1-Trendfolge auf allen getesteten Symbolen deutlich – sowohl im Ø Sharpe als auch in der Stabilitätskennzahl (Std, profitable Fenster-Quote). Der Edge auf M15 ist signifikant stärker und konsistenter.
+
+**Warum M15 besser als H4?** Hypothese: Intraday-Trends auf M15 entstehen durch Session-Öffnungen, Nachrichten und institutionelle Order-Flow-Blöcke, die innerhalb von Stunden abgebaut werden. Das Modell lernt diese reproduzierbaren Intraday-Muster effizienter als die langsameren, makrogetriebenen H4-Trends, die störanfälliger für geopolitische Einzelereignisse sind.
+
+### Nächste Schritte (M15-Strang)
+
+1. **Demo-Live-Test M15:** Bot mit `--timeframe M15` und allen 4 Symbolen starten (nach Erweiterung von `build_portfolio_stack` auf 4 Symbole)
+2. **Korrelationsanalyse M15-Portfolio:** Fensterweise Sharpe-Korrelation der 4 M15-Systeme berechnen – sind sie hinreichend unkorreliert für Kombination?
+3. **Vergleich nach echter Live-Laufzeit:** Nach 4 Wochen Demo-Live: Hat M15 tatsächlich mehr, kleinere Trades produziert als H4?

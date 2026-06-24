@@ -90,38 +90,55 @@ def _load_env(env_path: str = ".env") -> None:
 # Modell-Suche
 # ---------------------------------------------------------------------------
 
-def find_newest_model(model_dir: str | Path = "models", timeframe: str = "H4") -> Path:
+def find_newest_model(
+    model_dir: str | Path = "models",
+    timeframe: str = "H4",
+    symbol: str = "XAUUSD",
+) -> Path:
     """
     Gibt den Pfad zum neuesten Signal-Modell zurueck.
-    Sucht zuerst timeframe-spezifische Modelle (z.B. signal_model_v1_M15_*.joblib),
-    faellt auf beliebiges Modell zurueck wenn keines gefunden wird.
+    Suchreihenfolge:
+      1. signal_model_v*_{SYMBOL}_{TF}_*.joblib  (symbol+tf-spezifisch)
+      2. signal_model_v*_{TF}_*.joblib           (nur tf-spezifisch)
+      3. signal_model_v*.joblib                  (beliebiges Modell, mit Warnung)
     """
     from loguru import logger
-    d = Path(model_dir)
-    # Timeframe-spezifisches Modell bevorzugen
-    tf_candidates = sorted(
-        [f for f in d.glob(f"signal_model_v*_{timeframe}_*.joblib") if "_IS_" not in f.name],
+    d    = Path(model_dir)
+    sym  = symbol.upper()
+    tf   = timeframe.upper()
+    # 1. Symbol + TF spezifisch
+    best = sorted(
+        [f for f in d.glob(f"signal_model_v*_{sym}_{tf}_*.joblib") if "_IS_" not in f.name],
         key=lambda f: f.stat().st_mtime, reverse=True,
     )
-    if tf_candidates:
-        return tf_candidates[0]
-    # Fallback: beliebiges Modell (mit Warnung)
+    if best:
+        return best[0]
+    # 2. Nur TF spezifisch (kein Symbol-Filter)
+    tf_only = sorted(
+        [f for f in d.glob(f"signal_model_v*_{tf}_*.joblib") if "_IS_" not in f.name],
+        key=lambda f: f.stat().st_mtime, reverse=True,
+    )
+    if tf_only:
+        logger.warning(
+            "Kein {sym}_{tf}-spezifisches Modell – nutze {m}",
+            sym=sym, tf=tf, m=tf_only[0].name,
+        )
+        return tf_only[0]
+    # 3. Fallback: beliebiges Modell
     candidates = sorted(
         [f for f in d.glob("signal_model_v*.joblib") if "_IS_" not in f.name],
         key=lambda f: f.stat().st_mtime, reverse=True,
     )
     if not candidates:
         raise StartupError(
-            f"Kein trainiertes Modell in '{d}' gefunden.\n"
-            "Fuehre zuerst aus: python scripts/train_model.py --symbol XAUUSD\n"
-            "Erwartetes Muster: models/signal_model_v1_YYYYMMDD.joblib"
+            f"Kein trainiertes Modell fuer {sym} {tf} in '{d}' gefunden.\n"
+            f"Fuehre aus: python scripts/train_model.py --symbol {sym} --tf {tf}\n"
+            "Erwartetes Muster: models/signal_model_v1_{SYMBOL}_{TF}_YYYYMMDD.joblib"
         )
-    if timeframe != "H4":
-        logger.warning(
-            "Kein {tf}-spezifisches Modell gefunden – nutze H4-Modell {m}. "
-            "Fuer bessere Signale: Modell auf {tf}-Daten neu trainieren.",
-            tf=timeframe, m=candidates[0].name,
-        )
+    logger.warning(
+        "Kein {sym}_{tf}-Modell – Fallback auf {m} (H4-Modell mit M15-Daten!)",
+        sym=sym, tf=tf, m=candidates[0].name,
+    )
     return candidates[0]
 
 

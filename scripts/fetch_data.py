@@ -81,7 +81,22 @@ def _build_pipeline() -> DataPipeline:
         logger.warning("OANDA nicht erreichbar beim Start: {exc}", exc=exc)
 
     router    = DataRouter(mt5, oanda, validator=PriceValidator())
-    validator = DataValidator()
+
+    # Qualitaetsparameter aus config.yaml lesen (unterstuetzt unterschiedliche
+    # Anforderungen je Symbol/Timeframe, z.B. XAUUSD hat mehr Luecken als Forex)
+    try:
+        import yaml
+        with open("config/config.yaml", encoding="utf-8") as _f:
+            _cfg = yaml.safe_load(_f) or {}
+        _dv = _cfg.get("data_validation", {})
+        validator = DataValidator(
+            max_missing_pct=float(_dv.get("max_missing_pct", 5.0)),
+            outlier_atr_multiplier=float(_dv.get("outlier_atr_multiplier", 5.0)),
+            min_quality_score=float(_dv.get("min_quality_score", 0.95)),
+        )
+    except Exception:
+        validator = DataValidator()
+
     builder   = FeatureBuilder()
 
     return DataPipeline(router, validator, builder)

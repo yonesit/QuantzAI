@@ -354,16 +354,18 @@ def build_save_path(
     version: int,
     model_date: date | None = None,
     timeframe: str | None = None,
+    symbol: str | None = None,
 ) -> Path:
     """Erstellt den Speicherpfad gemaess Namenskonvention.
 
-    Timeframe wird im Dateinamen kodiert wenn angegeben und != 'H4',
-    damit find_newest_model(timeframe=...) ihn korrekt erkennt.
+    Encoding: signal_model_v{V}[_{SYMBOL}][_{TF}]_{YYYYMMDD}.joblib
     Beispiele:
-      H4  -> signal_model_v1_20260624.joblib  (Rueckwaertskompatibilitaet)
-      M15 -> signal_model_v1_M15_20260624.joblib
+      H4              -> signal_model_v1_20260624.joblib  (Rueckwaertskompatibilitaet)
+      EURUSD M15      -> signal_model_v1_EURUSD_M15_20260624.joblib
+      XAUUSD M15      -> signal_model_v1_XAUUSD_M15_20260624.joblib
     """
     d = model_date or date.today()
-    tf_part = f"_{timeframe}" if timeframe and timeframe.upper() != "H4" else ""
-    fname = f"signal_model_v{version}{tf_part}_{d.strftime('%Y%m%d')}.joblib"
+    sym_part = f"_{symbol.upper()}" if symbol else ""
+    tf_part  = f"_{timeframe.upper()}" if timeframe and timeframe.upper() != "H4" else ""
+    fname = f"signal_model_v{version}{sym_part}{tf_part}_{d.strftime('%Y%m%d')}.joblib"
     return Path("models") / fname
