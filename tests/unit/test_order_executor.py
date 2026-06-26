@@ -73,11 +73,12 @@ def _mt5_mock() -> MagicMock:
     mt5.positions_get.return_value = [pos]
 
     # symbol_info / symbol_info_tick fuer stops_level-Validierung
-    # stops_level=0 -> kein Clamp in Standard-Tests
-    sym_info = MagicMock()
-    sym_info.stops_level = 0
-    sym_info.point       = 0.00001
-    sym_info.digits      = 5
+    # trade_stops_level=0 -> kein Clamp in Standard-Tests
+    # (echtes MT5-SymbolInfo nutzt "trade_stops_level", nicht "stops_level")
+    sym_info = MagicMock(spec=["trade_stops_level", "point", "digits"])
+    sym_info.trade_stops_level = 0
+    sym_info.point             = 0.00001
+    sym_info.digits            = 5
     mt5.symbol_info.return_value = sym_info
 
     sym_tick = MagicMock()
@@ -1071,11 +1072,15 @@ class TestStopsLevelClamp:
         return ex, mt5
 
     def _xauusd_sym_info(self, mt5: MagicMock, stops_level: int = 50) -> None:
-        """Konfiguriert symbol_info fuer XAUUSD (stops_level, point=0.01, digits=2)."""
-        sym_info = MagicMock()
-        sym_info.stops_level = stops_level
-        sym_info.point       = 0.01
-        sym_info.digits      = 2
+        """Konfiguriert symbol_info fuer XAUUSD (trade_stops_level, point=0.01, digits=2).
+
+        Nutzt bewusst den echten MT5-Feldnamen ``trade_stops_level`` (spec-restricted),
+        damit der Test gegen das reale SymbolInfo-Verhalten greift.
+        """
+        sym_info = MagicMock(spec=["trade_stops_level", "point", "digits"])
+        sym_info.trade_stops_level = stops_level
+        sym_info.point             = 0.01
+        sym_info.digits            = 2
         mt5.symbol_info.return_value = sym_info
 
         tick = MagicMock()

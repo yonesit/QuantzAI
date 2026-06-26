@@ -84,6 +84,26 @@ def _load_mt5():
         ) from exc
 
 
+def read_stops_level(info) -> int:
+    """Liest den Broker-Mindestabstand (Punkte) robust aus einem SymbolInfo.
+
+    Das echte MetaTrader5-Paket nennt das Feld ``trade_stops_level``. Aeltere
+    Stubs / Mocks nutzten faelschlich ``stops_level`` – deshalb beide Namen
+    probieren. Faellt auf 0 zurueck (= kein Mindestabstand, kein Clamp) wenn
+    keines vorhanden oder nicht numerisch ist. Wirft niemals eine Exception,
+    damit ein fehlendes Feld den Live-Handel nicht blockiert.
+    """
+    for attr in ("trade_stops_level", "stops_level"):
+        val = getattr(info, attr, None)
+        try:
+            ival = int(val)
+        except (TypeError, ValueError):
+            continue
+        if ival >= 0:
+            return ival
+    return 0
+
+
 # ─────────────────────────────────────────────
 #  MT5Connector
 # ─────────────────────────────────────────────
@@ -419,7 +439,7 @@ class MT5Connector:
             "point":         info.point,
             "digits":        info.digits,
             "spread":        info.spread,
-            "stops_level":   info.stops_level,
+            "stops_level":   read_stops_level(info),
             "swap_long":     info.swap_long,
             "swap_short":    info.swap_short,
             "contract_size": info.trade_contract_size,

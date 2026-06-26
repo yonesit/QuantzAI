@@ -54,6 +54,7 @@ from src.data.mt5_connector import (   # noqa: E402
     MT5Connector,
     MT5ConnectionError,
     MT5DataError,
+    read_stops_level,
 )
 
 TIMEFRAME_MAP = {
@@ -272,6 +273,72 @@ class TestSymbolInfo:
     def test_not_connected_raises(self, connector):
         with pytest.raises(MT5ConnectionError):
             connector.get_symbol_info("EURUSD")
+
+    def test_stops_level_uses_real_mt5_field(self, connected_connector, stub):
+        """get_symbol_info liest den echten MT5-Feldnamen trade_stops_level."""
+        info = _make_symbol_info()
+        info.trade_stops_level = 50
+        stub.symbol_info.return_value = info
+        result = connected_connector.get_symbol_info("XAUUSD")
+        assert result["stops_level"] == 50
+
+    def test_stops_level_missing_field_falls_back_to_zero(self, connected_connector, stub):
+        """Fehlt das Feld komplett -> 0 (kein Crash, kein AttributeError)."""
+        # spec ohne stops-Felder = reales Objekt ohne trade_stops_level/stops_level
+        info = MagicMock(spec=["point", "digits", "spread",
+                               "swap_long", "swap_short", "trade_contract_size"])
+        info.point      = 0.01
+        info.digits     = 2
+        info.spread     = 10
+        info.swap_long  = -0.5
+        info.swap_short = 0.3
+        info.trade_contract_size = 100
+        stub.symbol_info.return_value = info
+        # darf NICHT crashen (Regression: AttributeError 'stops_level')
+        result = connected_connector.get_symbol_info("XAUUSD")
+        assert result["stops_level"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: read_stops_level – robustes Auslesen des Broker-Mindestabstands
+# ---------------------------------------------------------------------------
+
+class TestReadStopsLevel:
+
+    def test_prefers_trade_stops_level(self):
+        """Echtes MT5-Feld trade_stops_level wird bevorzugt gelesen."""
+        info = MagicMock(spec=["trade_stops_level"])
+        info.trade_stops_level = 120
+        assert read_stops_level(info) == 120
+
+    def test_legacy_stops_level_fallback(self):
+        """Faellt auf das alte Feld stops_level zurueck wenn trade_stops_level fehlt."""
+        info = MagicMock(spec=["stops_level"])
+        info.stops_level = 30
+        assert read_stops_level(info) == 30
+
+    def test_missing_both_returns_zero(self):
+        """Kein stops-Feld vorhanden -> 0, kein AttributeError (DER eigentliche Bug)."""
+        info = MagicMock(spec=["point", "digits"])
+        info.point  = 0.01
+        info.digits = 2
+        assert read_stops_level(info) == 0
+
+    def test_non_numeric_value_returns_zero(self):
+        """Nicht-numerischer Wert -> 0 statt Exception."""
+        info = MagicMock(spec=["trade_stops_level"])
+        info.trade_stops_level = None
+        assert read_stops_level(info) == 0
+
+    def test_real_mt5_field_on_plain_object(self):
+        """Verhalten gegen ein echtes Objekt (kein Mock) mit trade_stops_level."""
+        info = types.SimpleNamespace(trade_stops_level=75)
+        assert read_stops_level(info) == 75
+
+    def test_plain_object_without_field(self):
+        """Echtes Objekt ganz ohne stops-Feld -> 0 (reproduziert Produktions-Crash)."""
+        info = types.SimpleNamespace(point=0.01, digits=2)
+        assert read_stops_level(info) == 0
 
 
 # ---------------------------------------------------------------------------

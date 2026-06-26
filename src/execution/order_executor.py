@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
-from src.data.mt5_connector import _load_mt5
+from src.data.mt5_connector import _load_mt5, read_stops_level
 from src.execution.execution_tracker import ExecutionTracker
 
 
@@ -608,7 +608,7 @@ class OrderExecutor:
             sym_info = mt5.symbol_info(symbol)
             tick     = mt5.symbol_info_tick(symbol)
             if sym_info is not None and tick is not None:
-                stops_lvl = int(getattr(sym_info, "stops_level", 0) or 0)
+                stops_lvl = read_stops_level(sym_info)
                 if stops_lvl > 0:
                     point     = float(getattr(sym_info, "point",  0.00001))
                     digits    = int(getattr(sym_info,  "digits",  5))
