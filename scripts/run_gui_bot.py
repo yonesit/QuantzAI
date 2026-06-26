@@ -35,6 +35,8 @@ import json
 import os
 import sys
 import threading
+import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # Projekt-Root in Pfad aufnehmen
@@ -219,6 +221,25 @@ def build_mt5_connector(max_retries: int = 1):
         ) from exc
 
     return connector
+
+
+def _calendar_refresh_loop(calendar) -> None:
+    """
+    Daemon-Thread: aktualisiert den Wirtschaftskalender taeglich um 00:00 UTC.
+    Schlaeft bis zur naechsten Mitternacht, ruft dann calendar.refresh() auf.
+    """
+    from loguru import logger
+    while True:
+        now      = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        time.sleep((tomorrow - now).total_seconds())
+        try:
+            calendar.refresh()
+            logger.info("Wirtschaftskalender: Tages-Refresh durchgefuehrt.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Wirtschaftskalender-Refresh fehlgeschlagen: {exc}", exc=exc)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +473,7 @@ def build_trading_stack(
     from src.risk.correlation_guard import CorrelationGuard
     from src.risk.pre_trade_check import PreTradeCheck
     from src.models.signal_model import SignalModel
+    from src.models.regime_detector import RegimeDetector
     from src.execution.order_executor import OrderExecutor
     from src.monitoring.audit_log import AuditLog
     from src.orchestrator import TradingOrchestrator
@@ -527,6 +549,8 @@ def build_trading_stack(
         audit_log=audit_log,
     )
 
+    regime_detector = RegimeDetector()
+
     # ── OrderEventRelay (#59: Live-Order-Updates) ─────────────────────────
     order_relay = OrderEventRelay()
     order_relay.attach(order_executor)
@@ -553,6 +577,7 @@ def build_trading_stack(
         audit_log=audit_log,
         features_dir=str(_ROOT / "data" / "features"),
         balance_getter=_balance_getter,
+        regime_detector=regime_detector,
         timeframe=timeframe,
         signal_confidence_threshold=model_cfg.get("confidence_threshold", 0.55),
         mode=TradingMode.CONFIRM_REQUIRED,
@@ -623,6 +648,7 @@ def build_portfolio_stack(
     from src.risk.pre_trade_check import PreTradeCheck
     from src.models.signal_model import SignalModel
     from src.models.mean_reversion_model import MeanReversionModel
+    from src.models.regime_detector import RegimeDetector
     from src.execution.order_executor import OrderExecutor
     from src.monitoring.audit_log import AuditLog
     from src.orchestrator import TradingOrchestrator
@@ -696,12 +722,15 @@ def build_portfolio_stack(
     audit_log = AuditLog(db_path=str(_ROOT / "data" / "processed" / "audit.db"))
 
     os.environ.setdefault("CONFIRM_AUTONOMOUS", "yes")
+    os.environ.setdefault("CONFIRM_LIVE", "yes")
     order_executor = OrderExecutor(
         connector=connector,
-        live_trading_enabled=False,
+        live_trading_enabled=True,
         paper_trades_path=str(_ROOT / "data" / "processed" / "paper_trades.json"),
         audit_log=audit_log,
     )
+
+    regime_detector = RegimeDetector()
 
     order_relay = OrderEventRelay()
     order_relay.attach(order_executor)
@@ -749,6 +778,7 @@ def build_portfolio_stack(
         features_loader=_xauusd_features_loader,
         balance_getter=_balance_getter,
         price_getter=_price_getter,
+        regime_detector=RegimeDetector(),
         timeframe=timeframe,
         sl_atr_multiplier=sl_multiplier,
         tp_atr_multiplier=tp_multiplier,
@@ -784,6 +814,7 @@ def build_portfolio_stack(
         features_loader=_eurusd_mr_features_loader,
         balance_getter=_balance_getter,
         price_getter=_price_getter,
+        regime_detector=RegimeDetector(),
         timeframe=timeframe,
         sl_atr_multiplier=sl_multiplier,
         tp_atr_multiplier=tp_multiplier,
@@ -813,7 +844,7 @@ def build_portfolio_stack(
     logger.info(
         "Portfolio-Stack bereit | XAUUSD {tf} TF + EURUSD {tf} MR | "
         "Virtuelles Kapital={vb} EUR | SL={sl}x ATR | TP={tp}x ATR | "
-        "BE-Threshold={be}% | Modus=AUTONOMOUS | Paper-Modus=True",
+        "BE-Threshold={be}% | Modus=AUTONOMOUS | Demo-Live=True",
         tf=timeframe, vb=virtual_balance,
         sl=sl_multiplier, tp=tp_multiplier, be=int(be_threshold * 100),
     )
@@ -826,6 +857,7 @@ def build_portfolio_stack(
         "pipeline":       pipeline,
         "audit_log":      audit_log,
         "connector":      connector,
+        "calendar":       calendar,
     }
 
 
@@ -999,7 +1031,8 @@ class _LiveDashboardBackend:
             pass
 
         # Gesamt-Gewinn / Gesamt-Verlust direkt aus paper_trades.json lesen
-        # (_paper_positions ist nach Neustart leer – Datei ist die einzige Quelle)
+        # Bei fehlenden geschlossenen Trades bleibt der Wert None und wird von
+        # der UI als €0.00 dargestellt.
         total_profit: float | None = None
         total_loss:   float | None = None
         try:
@@ -1096,7 +1129,7 @@ def main(argv=None) -> int:
 
     # ── MT5 verbinden ─────────────────────────────────────────────────────
     try:
-        connector = build_mt5_connector()
+        connector = build_mt5_connector(max_retries=3)
     except StartupError as exc:
         logger.error("MT5-Verbindung: {exc}", exc=exc)
         print(f"\nFEHLER: {exc}", file=sys.stderr)
@@ -1158,6 +1191,15 @@ def main(argv=None) -> int:
         logger.error("Stack-Aufbau fehlgeschlagen: {exc}", exc=exc)
         QMessageBox.critical(window, "Startup-Fehler", str(exc))
         return 1
+
+    # ── Kalender taeglich um 00:00 UTC aktualisieren ─────────────────────
+    _cal_thread = threading.Thread(
+        target=_calendar_refresh_loop,
+        args=(stack["calendar"],),
+        daemon=True,
+        name="calendar-refresh",
+    )
+    _cal_thread.start()
 
     # ── GUI-Verbindungen herstellen ───────────────────────────────────────
 
