@@ -264,3 +264,82 @@ class TestXAUUSDPipParams:
         )
         assert result.is_valid is True
         assert result.lot_size == pytest.approx(0.05, abs=0.005)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Pro-Symbol-Risiko-Override (symbol_params[...]["risk_pct"])
+# XAUUSD = 2 %, EURUSD bleibt bei 1 %. Bei hoher Volatilitaet (ATR ~12) faellt
+# 1 % unter die Mindest-Lot-Groesse -> 2 % noetig, damit ueberhaupt getradet wird.
+# ---------------------------------------------------------------------------
+
+class TestPerSymbolRiskOverride:
+
+    # Produktions-Parameter: XAUUSD mit 2 % Risiko, sl_atr_multiplier=1.0 (config)
+    _PARAMS = {"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0, "risk_pct": 2.0}}
+
+    def test_xauusd_2pct_reaches_min_lot_at_high_atr(self):
+        """ATR=12, 1000 EUR, 2 % -> raw_lot=0.0167 -> 0.01 Lot (gueltig)."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,          # Instanz-Default = 1 %
+            sl_atr_multiplier=1.0,
+            symbol_params=self._PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=12.0, symbol="XAUUSD"
+        )
+        # risk=20, sl_dist=12, sl_pips=1200, raw_lot=20/1200=0.01667 -> floor 0.01
+        assert result.is_valid is True
+        assert result.lot_size == pytest.approx(0.01)
+        assert result.risk_amount == pytest.approx(20.0)  # 2 % von 1000
+
+    def test_xauusd_1pct_would_be_rejected_at_high_atr(self):
+        """Gegenprobe: ohne 2 %-Override faellt XAUUSD bei ATR=12 unter Mindest-Lot."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            # kein risk_pct-Override -> Instanz-Default 1 %
+            symbol_params={"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0}},
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=12.0, symbol="XAUUSD"
+        )
+        # risk=10, raw_lot=10/1200=0.00833 -> floor 0.00 < 0.01 -> abgelehnt
+        assert result.is_valid is False
+
+    def test_eurusd_stays_at_instance_default(self):
+        """EURUSD hat keinen Override -> 1 % (Instanz-Default), nicht 2 %."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=10_000, atr=0.0020, symbol="EURUSD"
+        )
+        # 1 % von 10000 = 100 EUR Risiko (nicht 200)
+        assert result.risk_amount == pytest.approx(100.0)
+
+    def test_symbol_risk_overrides_instance_default(self):
+        """symbol_params.risk_pct schlaegt den Instanz-Default."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=12.0, symbol="XAUUSD"
+        )
+        assert result.risk_amount == pytest.approx(20.0)  # 2 %, nicht 1 %
+
+    def test_explicit_risk_pct_kwarg_wins_over_symbol_config(self):
+        """Expliziter risk_pct-Aufrufparameter hat hoechste Praezedenz."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._PARAMS,    # XAUUSD risk_pct=2.0
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=12.0, symbol="XAUUSD",
+            risk_pct=5.0,                  # ueberschreibt die 2 % aus der Config
+        )
+        assert result.risk_amount == pytest.approx(50.0)  # 5 % von 1000

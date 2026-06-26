@@ -53,9 +53,10 @@ class PositionSizer:
     risk_per_trade_pct : Risiko pro Trade in Prozent des Kontostands (Standard: 1.0)
     sl_atr_multiplier   : Multiplikator fuer Stop-Loss-Distanz aus ATR (Standard: 1.5)
     min_lot_size        : Mindest-Lot-Groesse (Standard: 0.01)
-    symbol_params       : Pro-Symbol-Overrides fuer pip_size und pip_value.
-                          Beispiel: {"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0}}
-                          Fehlende Schluessel greifen auf die calculate_lot_size-Defaults zurueck.
+    symbol_params       : Pro-Symbol-Overrides fuer pip_size, pip_value und risk_pct.
+                          Beispiel: {"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0, "risk_pct": 2.0}}
+                          Fehlende Schluessel greifen auf die calculate_lot_size-Defaults
+                          bzw. (bei risk_pct) auf risk_per_trade_pct zurueck.
     """
 
     def __init__(
@@ -106,7 +107,14 @@ class PositionSizer:
         pip_size  = _sp.get("pip_size",  pip_size)
         pip_value = _sp.get("pip_value", pip_value)
 
-        effective_risk_pct = risk_pct if risk_pct is not None else self._risk_pct
+        # Risiko-Praezedenz: expliziter risk_pct-Aufrufparameter (bewusste
+        # Per-Trade-Entscheidung) > Per-Symbol-Config > Instanz-Default.
+        if risk_pct is not None:
+            effective_risk_pct = risk_pct
+        elif _sp.get("risk_pct") is not None:
+            effective_risk_pct = _sp["risk_pct"]
+        else:
+            effective_risk_pct = self._risk_pct
 
         if account_balance <= 0:
             return self._rejected(symbol, "Kontostand muss positiv sein.")

@@ -61,12 +61,16 @@ risk:
   # Pro-Symbol-Pip-Parameter fuer PositionSizer.
   # pip_size  : Pip-Groesse des Symbols (fuer SL/TP-Pip-Distanz-Berechnung)
   # pip_value : Naehrerungsweiser Pip-Wert pro Lot in der Kontowaehrung
+  # risk_pct  : Optionaler Pro-Symbol-Risiko-Override (Prozent). Fehlt er, gilt
+  #             max_risk_per_trade_pct. XAUUSD braucht 2.0 %, weil bei hoher
+  #             Volatilitaet (ATR ~12) 1 % unter die Mindest-Lot-Groesse (0.01) faellt.
   # XAUUSD: 100 Unzen * 0.01 USD/Pip = 1.00 USD/Pip/Lot
   # USDJPY: abhaengig vom JPY/USD-Kurs (Naehrerungswert)
   symbol_pip_params:
     XAUUSD:
       pip_size: 0.01
       pip_value: 1.0
+      risk_pct: 2.0
     USDJPY:
       pip_size: 0.01
       pip_value: 7.0
