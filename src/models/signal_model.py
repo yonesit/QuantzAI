@@ -27,6 +27,18 @@ from typing import Any
 _LABEL_TO_CLASS: dict[int, int] = {-1: 0, 0: 1, 1: 2}
 _CLASS_TO_NAME: dict[int, str] = {0: "short", 1: "neutral", 2: "long"}
 _NAME_TO_CLASS: dict[str, int] = {v: k for k, v in _CLASS_TO_NAME.items()}
+_ANN_FACTOR: dict[str, int] = {
+    "1t": 525_600,
+    "5t": 105_120,
+    "15t": 35_040,
+    "30t": 17_520,
+    "1h": 8_760,
+    "4h": 2_190,
+    "1d": 252,
+    "d": 252,
+    "b": 252,
+    "1w": 52,
+}
 
 
 class SignalModel:
@@ -76,6 +88,7 @@ class SignalModel:
         self._feature_names = list(features_df.columns)
         self._model = lgb.LGBMClassifier(**self._params)
         self._model.fit(X, y)
+        self._clf = self._model
 
         unique, counts = np.unique(y_raw, return_counts=True)
         class_dist = {int(k): int(v) for k, v in zip(unique, counts)}
@@ -144,6 +157,7 @@ class SignalModel:
         payload = joblib.load(path)
         instance = cls(lgbm_params=payload["params"])
         instance._model = payload["model"]
+        instance._clf = payload["model"]
         instance._feature_names = payload["feature_names"]
         logger.info("SignalModel geladen <- {path}", path=path)
         return instance
@@ -215,7 +229,7 @@ class SignalModel:
             y_pred = model.predict(X_test)
             accuracy = float((y_pred == y_test).mean())
 
-            oos_sharpe = self._compute_sharpe(model, X_test, y_test_raw)
+            oos_sharpe = self._compute_sharpe(model, X_test, y_test_raw, ts[test_mask])
 
             window_result = {
                 "window": window_idx,
@@ -322,11 +336,33 @@ class SignalModel:
             return float((preds == y).mean())
         raise ValueError(f"Unbekannte Metrik: {metric}")
 
+    def _annualization_factor(self, timestamps: pd.Series | None = None) -> float:
+        if timestamps is None or len(timestamps) < 2:
+            return 252.0
+
+        timestamps = pd.to_datetime(timestamps)
+        freq = pd.infer_freq(timestamps)
+        if freq:
+            ann = _ANN_FACTOR.get(freq.lower())
+            if ann is not None:
+                return float(ann)
+
+        delta = timestamps.diff().dt.total_seconds().dropna()
+        if delta.empty:
+            return 252.0
+
+        secs = float(delta.median())
+        if secs <= 0:
+            return 252.0
+
+        return float(31_536_000.0 / secs)
+
     def _compute_sharpe(
         self,
         model: lgb.LGBMClassifier,
         X_test: np.ndarray,
         y_raw: np.ndarray,
+        timestamps: pd.Series | None = None,
     ) -> float:
         """Berechnet vereinfachten OOS Sharpe Ratio basierend auf Signalen."""
         proba = model.predict_proba(X_test)
@@ -347,7 +383,9 @@ class SignalModel:
         std = arr.std()
         if std == 0:
             return 0.0
-        return float(arr.mean() / std * np.sqrt(252))
+
+        ann_factor = self._annualization_factor(timestamps)
+        return float(arr.mean() / std * np.sqrt(ann_factor))
 
 
 def build_save_path(

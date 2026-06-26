@@ -35,3 +35,4 @@ data/features/
 # Logs
 *.log
 logs/
+.aider*

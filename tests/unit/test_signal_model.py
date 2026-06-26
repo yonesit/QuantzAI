@@ -354,6 +354,16 @@ class TestWalkForward:
                 f"nicht groesser als test_size={r['test_size']}"
             )
 
+    def test_annualization_factor_daily(self):
+        model = SignalModel()
+        timestamps = pd.Series(pd.date_range("2024-01-01", periods=10, freq="D"))
+        assert model._annualization_factor(timestamps) == 252.0
+
+    def test_annualization_factor_15min(self):
+        model = SignalModel()
+        timestamps = pd.Series(pd.date_range("2024-01-01", periods=10, freq="15min"))
+        assert model._annualization_factor(timestamps) == 35_040.0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tests: Monte-Carlo

@@ -242,6 +242,20 @@ class TestEvaluate:
         assert r.sharpe   == 0.0
         assert r.win_rate == 0.0
 
+    def test_evaluate_annualizes_with_timeframe(self, tmp_path):
+        s = self._sched(tmp_path)
+        mock_inner = MagicMock()
+        mock_inner.predict_proba.return_value = np.array([[0.8, 0.1, 0.1]] * 20)
+        mock_sm = MagicMock()
+        mock_sm._model = mock_inner
+
+        y = np.array([-1, -1, -1, 1, 1] * 4, dtype=int)
+        r_h1 = s._evaluate(mock_sm, np.zeros((20, 3)), y, timeframe="H1")
+        r_m15 = s._evaluate(mock_sm, np.zeros((20, 3)), y, timeframe="M15")
+
+        assert r_h1.sharpe > 0.0
+        assert r_m15.sharpe > r_h1.sharpe
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Tests: _should_promote
@@ -356,7 +370,7 @@ class TestRun:
             if old_sm is not None:
                 MockSM.load.return_value = old_sm
 
-                def _side_effect(m, X, y):
+                def _side_effect(m, X, y, timeframe="H1"):
                     return promoted_metrics if m is new_sm else old_metrics
 
                 mock_eval.side_effect = _side_effect

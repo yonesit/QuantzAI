@@ -452,12 +452,25 @@ class TestStatusIndicator:
         assert "#22c55e" in style
 
     def test_dot_color_gray_when_stopped(self, widget_with_orc: BotControlsWidget):
+        widget_with_orc._set_state(BotState.STOPPED)
         style = widget_with_orc._status_dot.styleSheet()
         assert "#6b7280" in style
 
     def test_dot_color_amber_when_paused(self, qtbot: QtBot, widget_with_orc: BotControlsWidget):
         widget_with_orc._set_state(BotState.PAUSED)
         assert "#f59e0b" in widget_with_orc._status_dot.styleSheet()
+
+    def test_status_dot_hidden_when_not_running(self, widget_with_orc: BotControlsWidget):
+        widget_with_orc._set_state(BotState.STOPPED)
+        assert widget_with_orc._status_dot.isHidden()
+        widget_with_orc._set_state(BotState.PAUSED)
+        assert widget_with_orc._status_dot.isHidden()
+        widget_with_orc._set_state(BotState.STOPPING)
+        assert widget_with_orc._status_dot.isHidden()
+
+    def test_status_dot_visible_when_running(self, widget_with_orc: BotControlsWidget):
+        widget_with_orc._set_state(BotState.RUNNING)
+        assert not widget_with_orc._status_dot.isHidden()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

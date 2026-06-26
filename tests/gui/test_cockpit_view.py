@@ -712,6 +712,12 @@ class TestCockpitTradingStats:
         cockpit.update_trading_stats(snap)
         assert "80" in cockpit.total_stats_card.loss_label.text()
 
+    def test_update_trading_stats_shows_zero_for_missing_total_profit_loss(self, cockpit: CockpitView):
+        snap = DashboardSnapshot()
+        cockpit.update_trading_stats(snap)
+        assert cockpit.total_stats_card.profit_label.text() == "€0.00"
+        assert cockpit.total_stats_card.loss_label.text() == "€0.00"
+
     def test_positions_table_close_button_emits_signal(self, cockpit: CockpitView, qtbot: QtBot):
         snap = _snap_with_positions(ticket=99)
         cockpit.update_trading_stats(snap)

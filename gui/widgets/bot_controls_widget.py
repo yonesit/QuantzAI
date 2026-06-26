@@ -26,9 +26,10 @@ from typing import Optional
 
 from loguru import logger
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QPropertyAnimation, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -158,6 +159,18 @@ class BotControlsWidget(QWidget):
         self._state         = BotState.STOPPED
         self._thread: Optional[QThread]   = None
         self._worker: Optional[BotWorker] = None
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(180)
+        self._status_timer.timeout.connect(self._rotate_status_dot)
+        self._status_spinner_frames = ["◴", "◷", "◶", "◵"]
+        self._status_spinner_index = 0
+
+        self._status_opacity_effect = QGraphicsOpacityEffect(self)
+        self._status_animation = QPropertyAnimation(self._status_opacity_effect, b"opacity", self)
+        self._status_animation.setDuration(600)
+        self._status_animation.setStartValue(0.4)
+        self._status_animation.setEndValue(1.0)
+        self._status_animation.setLoopCount(-1)
 
         self._build()
         self._refresh_status_indicator()
@@ -178,10 +191,12 @@ class BotControlsWidget(QWidget):
         outer.addWidget(title)
 
         # Status-Indicator
-        self._status_dot   = QLabel("●")
+        self._status_dot   = QLabel(self._status_spinner_frames[0])
         self._status_label = QLabel(self._state.value)
         self._status_dot.setObjectName("bot_status_dot")
         self._status_label.setObjectName("bot_status_label")
+        self._status_dot.setVisible(False)
+        self._status_dot.setGraphicsEffect(self._status_opacity_effect)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(6)
@@ -406,8 +421,27 @@ class BotControlsWidget(QWidget):
             BotState.STOPPING: "#ef4444",
         }
         color = colors[self._state]
-        self._status_dot.setStyleSheet(f"color: {color}; font-size: 9pt;")
         self._status_label.setText(self._state.value)
+        self._status_dot.setStyleSheet(f"color: {color}; font-size: 11pt;")
+
+        if self._state == BotState.RUNNING:
+            self._status_dot.setHidden(False)
+            self._status_timer.start()
+            self._status_animation.start()
+            self._status_spinner_index = 0
+            self._status_dot.setText(self._status_spinner_frames[0])
+        else:
+            self._status_timer.stop()
+            self._status_animation.stop()
+            self._status_opacity_effect.setOpacity(1.0)
+            self._status_dot.setHidden(True)
+            self._status_dot.setText("●")
+
+    def _rotate_status_dot(self) -> None:
+        self._status_spinner_index = (
+            self._status_spinner_index + 1
+        ) % len(self._status_spinner_frames)
+        self._status_dot.setText(self._status_spinner_frames[self._status_spinner_index])
 
     def _update_buttons(self) -> None:
         has_orc  = self._orchestrator is not None

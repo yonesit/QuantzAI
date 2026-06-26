@@ -5,6 +5,7 @@ Unit-Tests fuer scripts/run_gui_bot.py (Startup-Logik, keine echte MT5-Verbindun
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -27,8 +28,10 @@ from scripts.run_gui_bot import (
     build_trading_stack,
     build_portfolio_stack,
     MultiSymbolOrchestrator,
+    _LiveDashboardBackend,
     calc_unrealized_pnl,
 )
+from src.models.regime_detector import RegimeDetector
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +164,62 @@ class TestLoadEnv:
     def test_missing_file_is_silently_ignored(self, tmp_path):
         # kein Fehler wenn .env nicht existiert
         _load_env(str(tmp_path / ".env"))
+
+
+class TestLiveDashboardBackend:
+    def test_fetch_snapshot_preserves_none_for_missing_totals(self, tmp_path):
+        connector = MagicMock()
+        connector.get_account_info.return_value = {
+            "balance": 10_000.0,
+            "currency": "EUR",
+            "equity": 10_000.0,
+            "login": 123,
+            "server": "Demo",
+            "leverage": 100,
+            "is_demo": True,
+        }
+
+        executor = MagicMock()
+        executor.get_open_positions.return_value = []
+        executor._live = True
+        executor._paper_path = tmp_path / "paper_trades.json"
+
+        backend = _LiveDashboardBackend(connector, executor)
+        snap = backend.fetch_snapshot()
+
+        assert snap.total_gross_profit is None
+        assert snap.total_gross_loss is None
+
+    def test_fetch_snapshot_returns_real_totals_from_closed_paper_trades(self, tmp_path):
+        connector = MagicMock()
+        connector.get_account_info.return_value = {
+            "balance": 10_000.0,
+            "currency": "EUR",
+            "equity": 10_000.0,
+            "login": 123,
+            "server": "Demo",
+            "leverage": 100,
+            "is_demo": True,
+        }
+
+        executor = MagicMock()
+        executor.get_open_positions.return_value = []
+        executor._live = True
+        paper_path = tmp_path / "paper_trades.json"
+        paper_path.write_text(
+            json.dumps([
+                {"status": "closed", "pnl": 200.0},
+                {"status": "closed", "pnl": -80.0},
+            ]),
+            encoding="utf-8",
+        )
+        executor._paper_path = paper_path
+
+        backend = _LiveDashboardBackend(connector, executor)
+        snap = backend.fetch_snapshot()
+
+        assert snap.total_gross_profit == 200.0
+        assert snap.total_gross_loss == -80.0
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +566,49 @@ class TestBuildPortfolioStack:
             assert orch._confirmation_callback is cb, (
                 f"Orchestrator fuer {symbol}: confirmation_callback nicht gesetzt"
             )
+
+    def test_portfolio_order_executor_is_live(self, tmp_config, tmp_model, tmp_mr_model, minimal_connector):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        assert getattr(stack["order_executor"], "_live", False) is True
+
+    def test_build_trading_stack_injects_regime_detector(self, tmp_config, tmp_model, minimal_connector):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_trading_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                model_path=tmp_model,
+            )
+
+        assert isinstance(stack["orchestrator"]._regime_detector, RegimeDetector)
+
+    def test_build_portfolio_stack_injects_regime_detectors(self, tmp_config, tmp_model, tmp_mr_model, minimal_connector):
+        with (
+            patch("src.data.calendar.EconomicCalendar.refresh"),
+            patch("src.data.calendar.EconomicCalendar.is_no_trade_zone", return_value=False),
+        ):
+            stack = build_portfolio_stack(
+                config=_load_config(tmp_config),
+                connector=minimal_connector,
+                xauusd_model_path=tmp_model,
+                eurusd_mr_model_path=tmp_mr_model,
+            )
+
+        multi_orch = stack["orchestrator"]
+        for _, orch in multi_orch._pairs:
+            assert isinstance(orch._regime_detector, RegimeDetector)
 
 
 # ---------------------------------------------------------------------------

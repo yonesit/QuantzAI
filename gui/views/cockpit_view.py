@@ -377,13 +377,16 @@ class _TotalStatsCard(QFrame):
         lay.addLayout(row)
 
     def refresh(self, snap: DashboardSnapshot) -> None:
-        profit_text = _fmt_delta(snap.total_gross_profit, snap.currency)
-        self._profit_lbl.setText(profit_text)
-        self._profit_lbl.setStyleSheet(f"color: {_profit_color(snap.total_gross_profit)};")
+        profit_value = snap.total_gross_profit if snap.total_gross_profit is not None else 0.0
+        loss_value = snap.total_gross_loss if snap.total_gross_loss is not None else 0.0
 
-        loss_text = _fmt_delta(snap.total_gross_loss, snap.currency)
+        profit_text = _fmt_delta(profit_value, snap.currency)
+        self._profit_lbl.setText(profit_text)
+        self._profit_lbl.setStyleSheet(f"color: {_profit_color(profit_value)};")
+
+        loss_text = _fmt_delta(loss_value, snap.currency)
         self._loss_lbl.setText(loss_text)
-        self._loss_lbl.setStyleSheet(f"color: {_profit_color(snap.total_gross_loss)};")
+        self._loss_lbl.setStyleSheet(f"color: {_profit_color(loss_value)};")
 
     @property
     def profit_label(self) -> QLabel:

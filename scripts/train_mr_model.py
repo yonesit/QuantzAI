@@ -8,6 +8,10 @@ Standard-Parameter (Test #4):
 Fuer M15-Training:
   python scripts/train_mr_model.py --symbol EURUSD --tf M15 --start 2022-01-01
 
+Wenn die Datenqualitaet fehlende M15-Candles meldet, kannst du die Validierung lockern:
+  python scripts/train_mr_model.py --symbol EURUSD --tf M15 --start 2022-01-01 \
+      --max-missing-pct 20.0 --min-quality-score 0.70
+
 Ausgabe: models/mean_reversion_model_v1_<TF>_<DATUM>.joblib
          (H4 behält altes Format ohne TF-Suffix fuer Rueckwaertskompatibilitaet)
 """
@@ -40,6 +44,24 @@ def main() -> None:
     parser.add_argument("--tf",      default="H4",     help="Timeframe (Standard: H4)")
     parser.add_argument("--start",   default="2020-01-01", help="Startdatum YYYY-MM-DD")
     parser.add_argument("--end",     default=None,     help="Enddatum YYYY-MM-DD (Standard: heute)")
+    parser.add_argument(
+        "--max-missing-pct",
+        type=float,
+        default=5.0,
+        help="Maximaler Anteil fehlender Candles in Prozent (Standard: 5.0)",
+    )
+    parser.add_argument(
+        "--min-quality-score",
+        type=float,
+        default=0.95,
+        help="Minimaler Qualitaetsscore fuer valide Daten (Standard: 0.95)",
+    )
+    parser.add_argument(
+        "--max-gap-candles",
+        type=int,
+        default=3,
+        help="Maximale Groesse einer Luecke zum Interpolieren (Standard: 3)",
+    )
     args = parser.parse_args()
 
     symbol    = args.symbol.upper()
@@ -72,7 +94,12 @@ def main() -> None:
     # 2. Validieren
     from src.data.validator import DataValidator
     df_reset = raw_df.reset_index().rename(columns={raw_df.index.name or "index": "timestamp"})
-    report, clean_df = DataValidator().validate(df_reset, symbol=symbol, timeframe=timeframe)
+    validator = DataValidator(
+        max_missing_pct=args.max_missing_pct,
+        min_quality_score=args.min_quality_score,
+        max_gap_candles=args.max_gap_candles,
+    )
+    report, clean_df = validator.validate(df_reset, symbol=symbol, timeframe=timeframe)
     if not report.is_usable:
         raise RuntimeError(f"Datenqualitaet ungenuegend: {report.errors}")
     logger.info("Validator OK | quality={q:.3f} | {c} Bars", q=report.quality_score, c=report.total_candles)

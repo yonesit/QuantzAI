@@ -493,14 +493,20 @@ class FeatureBuilder:
         np.ndarray mit Trend-Werten, Reihenfolge entspricht h1_timestamps.
         """
         original_order = np.arange(len(h1_timestamps))
+        # Normalise to microsecond resolution – merge_asof requires identical dtypes.
+        # MT5 returns datetime64[s]; Parquet stores datetime64[us]; cast both to [us].
         h1_df = pd.DataFrame({
-            "timestamp": pd.to_datetime(h1_timestamps.values),
+            "timestamp": pd.to_datetime(h1_timestamps.values).astype("datetime64[us]"),
             "_order":    original_order,
         }).sort_values("timestamp")
 
+        mtf_sorted = mtf_df.copy()
+        mtf_sorted["close_time"] = pd.to_datetime(mtf_sorted["close_time"]).astype("datetime64[us]")
+        mtf_sorted = mtf_sorted.sort_values("close_time")
+
         merged = pd.merge_asof(
             h1_df,
-            mtf_df.sort_values("close_time")[["close_time", "trend"]],
+            mtf_sorted[["close_time", "trend"]],
             left_on="timestamp",
             right_on="close_time",
             direction="backward",

@@ -42,6 +42,17 @@ _STRUCT_COLS: frozenset[str] = frozenset(
     {"label", "timestamp", "open", "volume", "close", "high", "low"}
 )
 
+_ANN_FACTOR: dict[str, int] = {
+    "M1": 525_600,
+    "M5": 105_120,
+    "M15": 35_040,
+    "M30": 17_520,
+    "H1": 8_760,
+    "H4": 2_190,
+    "D1": 252,
+    "W1": 52,
+}
+
 _REGISTRY_FILENAME = "model_registry.json"
 
 
@@ -204,7 +215,7 @@ class RetrainingScheduler:
         new_model.save(new_path)
 
         # Neues Modell evaluieren
-        new_metrics = self._evaluate(new_model, X_oos, y_oos)
+        new_metrics = self._evaluate(new_model, X_oos, y_oos, timeframe)
 
         # Aktuell aktives Modell laden und evaluieren
         old_path    = self._find_active_model(exclude=new_path)
@@ -212,7 +223,7 @@ class RetrainingScheduler:
         if old_path is not None:
             try:
                 old_model   = SignalModel.load(old_path)
-                old_metrics = self._evaluate(old_model, X_oos, y_oos)
+                old_metrics = self._evaluate(old_model, X_oos, y_oos, timeframe)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Altes Modell konnte nicht evaluiert werden: {e}", e=exc
@@ -266,11 +277,12 @@ class RetrainingScheduler:
         model:  SignalModel,
         X_oos:  np.ndarray,
         y_oos:  np.ndarray,
+        timeframe: str = "H1",
     ) -> ModelMetrics:
         """
         Berechnet vereinfachten OOS-Sharpe und Win-Rate.
 
-        Sharpe: mean(returns) / std(returns) * sqrt(252), wobei
+        Sharpe: mean(returns) / std(returns) * sqrt(annualization_factor), wobei
         return[i] = +1 bei korrektem Direktionssignal, -1 bei falschem.
         Neutrale Vorhersagen werden uebersprungen.
 
@@ -303,7 +315,8 @@ class RetrainingScheduler:
         else:
             arr = np.array(returns, dtype=float)
             std = float(arr.std())
-            sharpe = float(arr.mean() / std * np.sqrt(252)) if std > 0 else 0.0
+            ann = _ANN_FACTOR.get(timeframe.upper(), 252)
+            sharpe = float(arr.mean() / std * np.sqrt(ann)) if std > 0 else 0.0
 
         return ModelMetrics(
             sharpe=sharpe,
