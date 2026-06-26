@@ -238,11 +238,15 @@ class TradingOrchestrator:
             pass
 
         # ── Schritt 5: Flat ───────────────────────────────────────────────────
-        if signal == "flat":
+        # Nur "long"/"short" sind handelbare Signale. Alles andere ("flat",
+        # "neutral" oder Unerwartetes) fuehrt zu KEINEM Trade. Wichtig: ohne
+        # diese Pruefung wuerde z.B. "neutral" durch die direction-Zuweisung
+        # unten faelschlich zu "sell" gemappt (signal != "long" -> "sell").
+        if signal not in ("long", "short"):
             result["action"]          = "flat"
-            result["reason"]          = "signal_flat"
+            result["reason"]          = f"signal_{signal}" if signal else "signal_flat"
             result["step_stopped_at"] = "flat_signal"
-            logger.info("Zyklus | {sym} | Signal=flat -> kein Trade", sym=symbol)
+            logger.info("Zyklus | {sym} | Signal={sig} -> kein Trade", sym=symbol, sig=signal)
             return result
 
         direction = "buy" if signal == "long" else "sell"
@@ -265,8 +269,12 @@ class TradingOrchestrator:
         atr         = self._extract_value(features_row, self._atr_col,   0.001)
         close_price = self._extract_value(features_row, self._close_col, 1.0)
 
-        # Im Paper-Modus: aktuellen Tick-Preis statt veralteter Kerzenschlusskurs verwenden
-        if not getattr(self._executor, "_live", True) and self._price_getter is not None:
+        # Aktuellen Tick-Preis statt veralteter Kerzenschlusskurs als SL/TP-Anker
+        # verwenden – gilt LIVE *und* Paper. Eine Market-Order fuellt zum aktuellen
+        # Marktpreis, nicht zum Schlusskurs der letzten (ggf. Stunden alten) Kerze.
+        # Anker am stale Candle-Close laesst SL/TP schief sitzen (Bug: XAUUSD-Short
+        # Ticket 446740295 – SL/TP um ~20 Punkte versetzt, RR-Verhaeltnis verzerrt).
+        if self._price_getter is not None:
             try:
                 tick_price = self._price_getter(symbol)
                 if tick_price:

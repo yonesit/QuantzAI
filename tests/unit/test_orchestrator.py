@@ -61,6 +61,11 @@ def _make_orch(
     balance=10_000.0,
     mode: TradingMode = TradingMode.AUTONOMOUS,
     regime_detector: Optional[RegimeDetector] = None,
+    price_getter=None,
+    sl_atr_multiplier: float = 1.5,
+    tp_atr_multiplier: float = 2.0,
+    atr_col: str = "atr",
+    close_col: str = "close",
 ) -> tuple[TradingOrchestrator, dict]:
     """Baut einen Orchestrator mit ausschliesslich Mocks."""
     pipeline    = MagicMock()
@@ -108,6 +113,11 @@ def _make_orch(
         features_loader=lambda sym: feat_df,
         balance_getter=lambda: balance,
         regime_detector=regime_detector,
+        price_getter=price_getter,
+        sl_atr_multiplier=sl_atr_multiplier,
+        tp_atr_multiplier=tp_atr_multiplier,
+        atr_col=atr_col,
+        close_col=close_col,
         mode=mode,
     )
 
@@ -251,6 +261,21 @@ class TestRunCycleHappyPath:
     def test_flat_signal_no_order_placed(self):
         orch, mocks = _make_orch(signal="flat")
         orch.run_cycle("EURUSD")
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_neutral_signal_does_not_trade_as_sell(self):
+        """Regression: 'neutral' darf NICHT zu 'sell' gemappt werden (Zeile 248)."""
+        orch, mocks = _make_orch(signal="neutral")
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "flat"
+        assert result["step_stopped_at"] == "flat_signal"
+        mocks["executor"].open_position.assert_not_called()
+
+    def test_unknown_signal_does_not_trade(self):
+        """Unerwartete Signalwerte fuehren ebenfalls zu keinem Trade."""
+        orch, mocks = _make_orch(signal="something_weird")
+        result = orch.run_cycle("EURUSD")
+        assert result["action"] == "flat"
         mocks["executor"].open_position.assert_not_called()
 
 
@@ -976,3 +1001,114 @@ class TestEmergencyStop:
         mocks["executor"].get_open_positions.side_effect = RuntimeError("mt5 down")
         orch.emergency_stop()  # Kein Fehler erwartet
         assert orch.is_paused is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Regression: SL/TP-Distanzen vs. ATR-Multiplikatoren (Long UND Short)
+#  Anlass: XAUUSD-Short Ticket 446740295 – SL/TP-Verhaeltnis verzerrt.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _xauusd_size_result(atr: float, sl_mult: float) -> PositionSizeResult:
+    """Mimik des PositionSizer-Ergebnisses: stop_loss_distance = atr * sl_mult."""
+    return PositionSizeResult(
+        symbol="XAUUSD",
+        lot_size=0.1,
+        risk_amount=20.0,
+        stop_loss_distance=atr * sl_mult,
+        is_valid=True,
+    )
+
+
+class TestSLTPDistanceRegression:
+    """SL = 1xATR, TP = 2xATR, jeweils in die richtige Richtung gespiegelt."""
+
+    _ATR    = 11.07
+    _CLOSE  = 4066.53
+    _SLMULT = 1.0
+    _TPMULT = 2.0
+
+    def _run(self, signal: str) -> "tuple[float, float]":
+        orch, mocks = _make_orch(
+            signal=signal,
+            size_result=_xauusd_size_result(self._ATR, self._SLMULT),
+            features=_make_features(close=self._CLOSE, atr=self._ATR),
+            sl_atr_multiplier=self._SLMULT,
+            tp_atr_multiplier=self._TPMULT,
+        )
+        orch.run_cycle("XAUUSD")
+        args = mocks["executor"].open_position.call_args.args
+        return args[3], args[4]   # sl_price, tp_price
+
+    def test_short_sl_above_tp_below(self):
+        sl, tp = self._run("short")
+        assert sl > self._CLOSE   # SL ueber Eroeffnung (Short)
+        assert tp < self._CLOSE   # TP unter Eroeffnung (Short)
+
+    def test_short_distances_match_atr_multipliers(self):
+        sl, tp = self._run("short")
+        sl_dist = sl - self._CLOSE
+        tp_dist = self._CLOSE - tp
+        assert sl_dist == pytest.approx(self._ATR * self._SLMULT, abs=1e-4)
+        assert tp_dist == pytest.approx(self._ATR * self._TPMULT, abs=1e-4)
+        # TP doppelt so weit wie SL – NICHT umgekehrt (Kern des Bugs)
+        assert tp_dist == pytest.approx(2 * sl_dist, abs=1e-4)
+        assert tp_dist > sl_dist
+
+    def test_long_sl_below_tp_above(self):
+        sl, tp = self._run("long")
+        assert sl < self._CLOSE   # SL unter Eroeffnung (Long)
+        assert tp > self._CLOSE   # TP ueber Eroeffnung (Long)
+
+    def test_long_distances_match_atr_multipliers(self):
+        sl, tp = self._run("long")
+        sl_dist = self._CLOSE - sl
+        tp_dist = tp - self._CLOSE
+        assert sl_dist == pytest.approx(self._ATR * self._SLMULT, abs=1e-4)
+        assert tp_dist == pytest.approx(self._ATR * self._TPMULT, abs=1e-4)
+        assert tp_dist == pytest.approx(2 * sl_dist, abs=1e-4)
+
+    def test_long_and_short_distances_are_symmetric(self):
+        sl_s, tp_s = self._run("short")
+        sl_l, tp_l = self._run("long")
+        # gleiche Distanzen, nur Richtung gespiegelt
+        assert (sl_s - self._CLOSE) == pytest.approx(self._CLOSE - sl_l, abs=1e-4)
+        assert (self._CLOSE - tp_s) == pytest.approx(tp_l - self._CLOSE, abs=1e-4)
+
+
+class TestLiveTickAnchor:
+    """SL/TP muessen am aktuellen Tick verankert werden – auch LIVE, nicht am
+    veralteten Candle-Close (Ursache des ~20-Punkte-Versatzes Ticket 446740295)."""
+
+    def test_live_mode_uses_tick_not_stale_close(self):
+        stale_close, live_tick, atr = 4086.79, 4066.53, 11.07
+        orch, mocks = _make_orch(
+            signal="short",
+            size_result=_xauusd_size_result(atr, 1.0),
+            features=_make_features(close=stale_close, atr=atr),
+            price_getter=lambda sym: live_tick,
+            sl_atr_multiplier=1.0,
+            tp_atr_multiplier=2.0,
+        )
+        mocks["executor"]._live = True   # LIVE-Modus
+        orch.run_cycle("XAUUSD")
+        sl, tp = mocks["executor"].open_position.call_args.args[3:5]
+        # Anker = live_tick, NICHT stale_close
+        assert sl == pytest.approx(live_tick + atr, abs=1e-4)       # 4077.60
+        assert tp == pytest.approx(live_tick - 2 * atr, abs=1e-4)   # 4044.39
+        # Gegenprobe: am Bug-Anker (stale_close) waere SL ~4097.86 (>10 Punkte weg)
+        assert abs(sl - (stale_close + atr)) > 10
+
+    def test_paper_mode_also_uses_tick(self):
+        stale_close, live_tick, atr = 4086.79, 4066.53, 11.07
+        orch, mocks = _make_orch(
+            signal="short",
+            size_result=_xauusd_size_result(atr, 1.0),
+            features=_make_features(close=stale_close, atr=atr),
+            price_getter=lambda sym: live_tick,
+            sl_atr_multiplier=1.0,
+            tp_atr_multiplier=2.0,
+        )
+        mocks["executor"]._live = False  # Paper-Modus
+        orch.run_cycle("XAUUSD")
+        sl, _tp = mocks["executor"].open_position.call_args.args[3:5]
+        assert sl == pytest.approx(live_tick + atr, abs=1e-4)
