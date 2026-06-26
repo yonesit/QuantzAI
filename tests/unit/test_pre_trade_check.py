@@ -303,3 +303,139 @@ class TestConfiguration:
         ok_gbp, _ = checker.is_safe_to_trade("GBPUSD")
         assert ok_eur is True
         assert ok_gbp is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Tests: XAUUSD Pip-Konvention + symbol_overrides
+#
+#  Regression-Test fuer den Bug bei dem XAUUSD mit der Forex-Pip-Groesse
+#  (0.0001) berechnet wurde, obwohl Gold 2 Dezimalstellen hat (point=0.01,
+#  pip_size=0.01). Folge: 5 points * 0.01 / 0.0001 = 500 statt 5 Pips.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _xauusd_connector(spread_points: int = 5) -> MagicMock:
+    """MT5Connector-Mock mit XAUUSD-typischen Werten (point=0.01, 2 Dezimalstellen)."""
+    conn = MagicMock()
+    conn.get_symbol_info.return_value = {
+        "spread": spread_points,
+        "point":  0.01,
+        "digits": 2,
+    }
+    return conn
+
+
+class TestXAUUSDSpreadConvention:
+
+    def test_xauusd_wrong_pip_size_gives_false_block(self):
+        """Reproduziert den urspruenglichen Bug: Forex-pip_size blockiert Gold faelschlich.
+        5 points * 0.01 / 0.0001 = 500 Pips >> 3.0 Limit."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=5),
+            max_spread_pips=3.0,
+            pip_size=0.0001,  # FALSCH fuer Gold
+        )
+        ok, reason = checker.is_safe_to_trade("XAUUSD")
+        assert ok is False
+        assert "500" in reason  # beweist dass die falsche Konvention 500 Pips liefert
+
+    def test_xauusd_correct_pip_size_via_symbol_overrides(self):
+        """Mit korrekter Gold-Pip-Groesse (0.01) und realistischem Limit wird Trade erlaubt.
+        5 points * 0.01 / 0.01 = 5 Pips < 100 Pips Limit -> OK."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=5),
+            max_spread_pips=3.0,
+            symbol_overrides={"XAUUSD": {"pip_size": 0.01, "max_spread_pips": 100.0}},
+        )
+        ok, reason = checker.is_safe_to_trade("XAUUSD")
+        assert ok is True
+        assert "5.0" in reason
+
+    def test_xauusd_spread_calculation_correct(self):
+        """Numerische Pruefung: 30 points * 0.01 / 0.01 = 30.0 Pips."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=30),
+            max_spread_pips=3.0,
+            symbol_overrides={"XAUUSD": {"pip_size": 0.01, "max_spread_pips": 100.0}},
+        )
+        ok, reason = checker.is_safe_to_trade("XAUUSD")
+        assert ok is True
+        assert "30.0" in reason
+
+    def test_xauusd_wide_spread_blocked_at_correct_threshold(self):
+        """150 Pips Gold-Spread (1.50 USD) > 100 Pips Limit -> blockiert."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=150),
+            max_spread_pips=3.0,
+            symbol_overrides={"XAUUSD": {"pip_size": 0.01, "max_spread_pips": 100.0}},
+        )
+        ok, reason = checker.is_safe_to_trade("XAUUSD")
+        assert ok is False
+        assert "150.0" in reason
+
+    def test_xauusd_override_does_not_affect_eurusd(self):
+        """symbol_overrides fuer XAUUSD aendert nichts an EURUSD-Berechnung."""
+        conn = MagicMock()
+        conn.get_symbol_info.return_value = {"spread": 10, "point": 0.00001, "digits": 5}
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=conn,
+            max_spread_pips=3.0,
+            symbol_overrides={"XAUUSD": {"pip_size": 0.01, "max_spread_pips": 100.0}},
+        )
+        # EURUSD: 10 * 0.00001 / 0.0001 = 1.0 Pip -> erlaubt
+        ok, _ = checker.is_safe_to_trade("EURUSD")
+        assert ok is True
+
+    def test_symbol_overrides_only_pip_size(self):
+        """Nur pip_size in override: max_spread_pips faellt auf globalen Default zurueck."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=5),
+            max_spread_pips=10.0,
+            symbol_overrides={"XAUUSD": {"pip_size": 0.01}},  # kein max_spread_pips
+        )
+        # 5 Pips < 10.0 (globaler Default) -> erlaubt
+        ok, _ = checker.is_safe_to_trade("XAUUSD")
+        assert ok is True
+
+    def test_symbol_overrides_only_max_spread(self):
+        """Nur max_spread_pips in override: pip_size faellt auf globalen Default zurueck."""
+        checker = PreTradeCheck(
+            calendar=_calendar(),
+            connector=_xauusd_connector(spread_points=5),
+            pip_size=0.0001,
+            max_spread_pips=3.0,
+            symbol_overrides={"XAUUSD": {"max_spread_pips": 1000.0}},  # kein pip_size
+        )
+        # 5 * 0.01 / 0.0001 = 500 Pips < 1000.0 -> erlaubt (aber Rechnung bleibt falsch)
+        ok, _ = checker.is_safe_to_trade("XAUUSD")
+        assert ok is True
+
+    def test_config_style_xauusd_and_usdjpy_overrides(self):
+        """Kombinierte Overrides wie in config.yaml: XAUUSD + USDJPY."""
+        symbol_overrides = {
+            "XAUUSD": {"pip_size": 0.01, "max_spread_pips": 100.0},
+            "USDJPY": {"pip_size": 0.01, "max_spread_pips": 3.0},
+        }
+        # XAUUSD: 5 points * 0.01 / 0.01 = 5 Pips < 100 -> OK
+        xau_conn = _xauusd_connector(spread_points=5)
+        xau_checker = PreTradeCheck(
+            calendar=_calendar(), connector=xau_conn,
+            max_spread_pips=3.0, symbol_overrides=symbol_overrides,
+        )
+        ok_xau, _ = xau_checker.is_safe_to_trade("XAUUSD")
+        assert ok_xau is True
+
+        # USDJPY: 10 points * 0.001 / 0.01 = 1 Pip < 3 -> OK
+        jpy_conn = MagicMock()
+        jpy_conn.get_symbol_info.return_value = {"spread": 10, "point": 0.001, "digits": 3}
+        jpy_checker = PreTradeCheck(
+            calendar=_calendar(), connector=jpy_conn,
+            max_spread_pips=3.0, symbol_overrides=symbol_overrides,
+        )
+        ok_jpy, _ = jpy_checker.is_safe_to_trade("USDJPY")
+        assert ok_jpy is True

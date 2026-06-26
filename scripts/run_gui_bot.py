@@ -518,6 +518,7 @@ def build_trading_stack(
         calendar=calendar,
         connector=connector,
         max_spread_pips=risk_cfg.get("spread_filter_pips", 3.0),
+        symbol_overrides=risk_cfg.get("symbol_spread_overrides", {}),
     )
 
     # ── Risiko-Komponenten ────────────────────────────────────────────────
@@ -699,6 +700,7 @@ def build_portfolio_stack(
         calendar=calendar,
         connector=connector,
         max_spread_pips=risk_cfg.get("spread_filter_pips", 3.0),
+        symbol_overrides=risk_cfg.get("symbol_spread_overrides", {}),
     )
 
     # Portfolio-RiskGuard: ueberwacht Gesamt-Portfolio-Drawdown

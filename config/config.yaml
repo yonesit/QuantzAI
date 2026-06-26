@@ -48,6 +48,16 @@ risk:
   max_correlation: 0.8
   correlation_window_days: 60
   spread_filter_pips: 3.0
+  # Pro-Symbol-Overrides fuer Pip-Groesse und Spread-Limit.
+  # XAUUSD: point=0.01 (2 Dezimalstellen) -> pip_size=0.01; typischer Spread 30-100 Pips (= 0.30-1.00 USD)
+  # USDJPY: point=0.001 (3 Dezimalstellen) -> pip_size=0.01
+  symbol_spread_overrides:
+    XAUUSD:
+      pip_size: 0.01
+      max_spread_pips: 100.0
+    USDJPY:
+      pip_size: 0.01
+      max_spread_pips: 3.0
   virtual_account_balance: 1000.0        # Effektives Risikokapital (1 % = 10 EUR Risiko/Trade)
   sl_atr_multiplier: 1.0                 # SL-Distanz (kleiner = engerer SL)
   tp_atr_multiplier: 2.0                 # TP-Distanz (2:1 RR, Ziel ~20 EUR)
