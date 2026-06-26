@@ -161,3 +161,106 @@ class TestSymbolSpecifics:
         # Lot-Groesse die normalerweise gueltig waere (>0.01) aber unter 0.1 liegt
         result = sizer.calculate_lot_size(account_balance=1_000, atr=0.0020, symbol="EURUSD")
         assert result.is_valid is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: XAUUSD-Pip-Parameter und SL-Distanz-Regression (Bug 4)
+#
+# Bug-Kontext:
+#   - Orchestrator nutzte atr_col="atr", FeatureBuilder erzeugt "atr_14"
+#     -> Fallback ATR=0.001 -> SL-Distanz=$0.001 -> stops_level-Verletzung
+#   - PositionSizer verwendete Forex-Defaults (pip_size=0.0001, pip_value=10.0)
+#     -> Mit echtem ATR ($2) ergab das sl_pips=20.000 -> Lot=0.00005 -> abgelehnt
+#
+# Fix: symbol_params={"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0}} in __init__
+# ---------------------------------------------------------------------------
+
+class TestXAUUSDPipParams:
+
+    _XAUUSD_PARAMS = {"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0}}
+
+    def test_valid_lot_with_correct_params(self):
+        """Realistisches XAUUSD-ATR ($2) + korrekte Pip-Params -> gueltiges Lot."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._XAUUSD_PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=2.0, symbol="XAUUSD"
+        )
+        # risk=10, sl_dist=2.0, sl_pips=200, pip_val=1.0 -> lot=10/200=0.05
+        assert result.is_valid is True
+        assert result.lot_size == pytest.approx(0.05, abs=0.005)
+
+    def test_forex_pip_size_gives_invalid_lot_for_xauusd(self):
+        """Ohne symbol_params (Forex-Defaults) -> XAUUSD-ATR=$2 ergibt zu kleines Lot."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            # kein symbol_params -> pip_size=0.0001, pip_value=10.0 (Forex-Defaults)
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=2.0, symbol="XAUUSD"
+        )
+        # sl_pips=2.0/0.0001=20000, lot=10/(20000*10)=0.00005 < 0.01 -> abgelehnt
+        assert result.is_valid is False
+
+    def test_sl_dist_realistic_for_xauusd(self):
+        """SL-Distanz mit realem ATR ($2) ist mehrere Dollar -> > typisches stops_level."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._XAUUSD_PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=2.0, symbol="XAUUSD"
+        )
+        # stops_level fuer XAUUSD (Fusion Markets) typisch 50-200 Punkte = $0.50-$2.00
+        # Mit ATR=$2 ist sl_dist=$2 -> deutlich ueber Mindestabstand
+        assert result.stop_loss_distance == pytest.approx(2.0)
+        assert result.stop_loss_distance >= 0.50  # > typisches stops_level-Minimum
+
+    def test_fallback_atr_sl_dist_too_small(self):
+        """Reproduziert den Bug: Fallback-ATR=0.001 ergibt sl_dist=$0.001 < stops_level."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._XAUUSD_PARAMS,
+        )
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=0.001, symbol="XAUUSD"  # Fallback-Wert
+        )
+        # sl_dist=0.001 -> viel zu nah am Kurs fuer XAUUSD (stops_level ~$0.50)
+        assert result.stop_loss_distance == pytest.approx(0.001)
+        assert result.stop_loss_distance < 0.50  # bestätigt: stops_level wuerde verletzt
+
+    def test_symbol_params_not_applied_to_eurusd(self):
+        """XAUUSD-Overrides beeinflussen EURUSD-Berechnung nicht."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.5,
+            symbol_params=self._XAUUSD_PARAMS,
+        )
+        eurusd_result = sizer.calculate_lot_size(
+            account_balance=10_000, atr=0.0020, symbol="EURUSD"
+        )
+        # EURUSD: sl_pips=0.003/0.0001=30, lot=100/(30*10)=0.33 -> gueltig
+        assert eurusd_result.is_valid is True
+        assert eurusd_result.lot_size > 0.1
+
+    def test_symbol_params_override_explicit_kwargs(self):
+        """symbol_params hat Vorrang vor expliziten pip_size/pip_value-Kwargs."""
+        sizer = PositionSizer(
+            risk_per_trade_pct=1.0,
+            sl_atr_multiplier=1.0,
+            symbol_params=self._XAUUSD_PARAMS,
+        )
+        # Explizit falsche Forex-Werte uebergeben -> symbol_params gewinnt
+        result = sizer.calculate_lot_size(
+            account_balance=1_000, atr=2.0, symbol="XAUUSD",
+            pip_size=0.0001,  # wird durch symbol_params ueberschrieben
+            pip_value=10.0,   # wird durch symbol_params ueberschrieben
+        )
+        assert result.is_valid is True
+        assert result.lot_size == pytest.approx(0.05, abs=0.005)

@@ -72,6 +72,19 @@ def _mt5_mock() -> MagicMock:
     pos.tp         = 1.1100
     mt5.positions_get.return_value = [pos]
 
+    # symbol_info / symbol_info_tick fuer stops_level-Validierung
+    # stops_level=0 -> kein Clamp in Standard-Tests
+    sym_info = MagicMock()
+    sym_info.stops_level = 0
+    sym_info.point       = 0.00001
+    sym_info.digits      = 5
+    mt5.symbol_info.return_value = sym_info
+
+    sym_tick = MagicMock()
+    sym_tick.ask = 1.10010
+    sym_tick.bid = 1.10000
+    mt5.symbol_info_tick.return_value = sym_tick
+
     return mt5
 
 
@@ -1035,3 +1048,95 @@ class TestLiveModeRequiresConfirmLiveEnv:
                 ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
         mock_paper.assert_not_called()
         mt5.order_send.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Tests: stops_level-Sicherheitsklammer (Bug 4 – XAUUSD Invalid stops)
+#
+#  Wenn der berechnete SL/TP den Broker-Mindestabstand (stops_level) unterschreitet,
+#  muss _open_live() die Werte auf den Mindestabstand + 10% Puffer hochklemmen.
+#  Retcode=10016 "Invalid stops" wird so verhindert.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestStopsLevelClamp:
+
+    def _live_executor(self, tmp_path: Path) -> "tuple[OrderExecutor, MagicMock]":
+        mt5 = _mt5_mock()
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "yes"}):
+            ex = OrderExecutor(
+                connector=_connector(),
+                live_trading_enabled=True,
+                paper_trades_path=tmp_path / "pt.json",
+            )
+        return ex, mt5
+
+    def _xauusd_sym_info(self, mt5: MagicMock, stops_level: int = 50) -> None:
+        """Konfiguriert symbol_info fuer XAUUSD (stops_level, point=0.01, digits=2)."""
+        sym_info = MagicMock()
+        sym_info.stops_level = stops_level
+        sym_info.point       = 0.01
+        sym_info.digits      = 2
+        mt5.symbol_info.return_value = sym_info
+
+        tick = MagicMock()
+        tick.bid = 3300.00
+        tick.ask = 3300.20
+        mt5.symbol_info_tick.return_value = tick
+
+    def test_sell_sl_too_close_is_clamped(self, tmp_path: Path):
+        """XAUUSD sell: SL nur $0.001 ueber Bid -> geclampt auf stops_level-Mindestabstand."""
+        ex, mt5 = self._live_executor(tmp_path)
+        self._xauusd_sym_info(mt5, stops_level=50)  # min_dist = 50*0.01*1.1 = $0.55
+
+        sl_too_close = 3300.001  # nur $0.001 ueber Bid (3300.00)
+        tp_far       = 3290.00   # $10 unter Bid -> weit genug
+
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            ex.open_position("XAUUSD", "sell", 0.05, sl_too_close, tp_far)
+
+        sent = mt5.order_send.call_args[0][0]
+        # SL muss geclampt worden sein: jetzt > original sl_too_close
+        assert sent["sl"] > sl_too_close
+        # SL muss mindestens den rohen Mindestabstand (50*0.01=0.50) uebersteigen
+        assert sent["sl"] - 3300.00 >= 0.50
+
+    def test_buy_sl_too_close_is_clamped(self, tmp_path: Path):
+        """XAUUSD buy: SL nur $0.001 unter Ask -> geclampt auf Mindestabstand."""
+        ex, mt5 = self._live_executor(tmp_path)
+        self._xauusd_sym_info(mt5, stops_level=50)
+
+        sl_too_close = 3300.199  # nur $0.001 unter Ask (3300.20)
+        tp_far       = 3310.00   # $9.80 ueber Ask -> weit genug
+
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            ex.open_position("XAUUSD", "buy", 0.05, sl_too_close, tp_far)
+
+        sent = mt5.order_send.call_args[0][0]
+        assert sent["sl"] < sl_too_close
+        assert 3300.20 - sent["sl"] >= 0.50
+
+    def test_no_clamp_when_sl_far_enough(self, tmp_path: Path):
+        """SL weit genug -> keine Veraenderung durch Clamp."""
+        ex, mt5 = self._live_executor(tmp_path)
+        self._xauusd_sym_info(mt5, stops_level=50)
+
+        sl_far = 3302.00   # $2.00 ueber Bid fuer Sell >> min_dist=0.55
+        tp_far = 3290.00
+
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            ex.open_position("XAUUSD", "sell", 0.05, sl_far, tp_far)
+
+        sent = mt5.order_send.call_args[0][0]
+        assert sent["sl"] == sl_far   # unveraendert
+
+    def test_stops_level_zero_no_clamp(self, tmp_path: Path):
+        """stops_level=0 bedeutet kein Mindestabstand -> SL unveraendert."""
+        ex, mt5 = self._live_executor(tmp_path)
+        self._xauusd_sym_info(mt5, stops_level=0)
+
+        sl_very_close = 3300.001
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            ex.open_position("XAUUSD", "sell", 0.05, sl_very_close, 3290.00)
+
+        sent = mt5.order_send.call_args[0][0]
+        assert sent["sl"] == sl_very_close  # kein Clamp

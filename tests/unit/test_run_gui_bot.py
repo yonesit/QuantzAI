@@ -358,6 +358,11 @@ class TestBuildTradingStack:
     und gemockten IO-Abhaengigkeiten (Calendar-HTTP, MT5-Daten).
     """
 
+    @pytest.fixture(autouse=True)
+    def _set_confirm_live(self, monkeypatch):
+        """build_trading_stack erfordert CONFIRM_LIVE=yes (live_trading_enabled=True)."""
+        monkeypatch.setenv("CONFIRM_LIVE", "yes")
+
     def test_demo_live_mode_enforced(
         self, tmp_config, tmp_model, tmp_path, minimal_connector
     ):
@@ -473,6 +478,11 @@ class TestBuildTradingStack:
 
 class TestBuildPortfolioStack:
     """Testet den Portfolio-Stack-Aufbau (XAUUSD TF + EURUSD MR)."""
+
+    @pytest.fixture(autouse=True)
+    def _set_confirm_live(self, monkeypatch):
+        """build_portfolio_stack erfordert CONFIRM_LIVE=yes (live_trading_enabled=True)."""
+        monkeypatch.setenv("CONFIRM_LIVE", "yes")
 
     def test_returns_all_expected_keys(
         self, tmp_config, tmp_model, tmp_mr_model, minimal_connector

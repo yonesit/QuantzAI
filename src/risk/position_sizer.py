@@ -53,6 +53,9 @@ class PositionSizer:
     risk_per_trade_pct : Risiko pro Trade in Prozent des Kontostands (Standard: 1.0)
     sl_atr_multiplier   : Multiplikator fuer Stop-Loss-Distanz aus ATR (Standard: 1.5)
     min_lot_size        : Mindest-Lot-Groesse (Standard: 0.01)
+    symbol_params       : Pro-Symbol-Overrides fuer pip_size und pip_value.
+                          Beispiel: {"XAUUSD": {"pip_size": 0.01, "pip_value": 1.0}}
+                          Fehlende Schluessel greifen auf die calculate_lot_size-Defaults zurueck.
     """
 
     def __init__(
@@ -60,10 +63,12 @@ class PositionSizer:
         risk_per_trade_pct: float = 1.0,
         sl_atr_multiplier: float = 1.5,
         min_lot_size: float = 0.01,
+        symbol_params: "dict[str, dict] | None" = None,
     ) -> None:
         self._risk_pct        = risk_per_trade_pct
         self._sl_multiplier    = sl_atr_multiplier
         self._min_lot_size     = min_lot_size
+        self._symbol_params    = symbol_params or {}
 
     def calculate_lot_size(
         self,
@@ -96,6 +101,11 @@ class PositionSizer:
         berechnete Groesse unter min_lot_size liegt (Trade wird abgelehnt,
         NICHT aufgerundet).
         """
+        # Per-Symbol-Overrides haben Vorrang vor Methodenparametern
+        _sp = self._symbol_params.get(symbol, {})
+        pip_size  = _sp.get("pip_size",  pip_size)
+        pip_value = _sp.get("pip_value", pip_value)
+
         effective_risk_pct = risk_pct if risk_pct is not None else self._risk_pct
 
         if account_balance <= 0:

@@ -419,6 +419,7 @@ class MT5Connector:
             "point":         info.point,
             "digits":        info.digits,
             "spread":        info.spread,
+            "stops_level":   info.stops_level,
             "swap_long":     info.swap_long,
             "swap_short":    info.swap_short,
             "contract_size": info.trade_contract_size,

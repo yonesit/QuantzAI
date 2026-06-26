@@ -58,6 +58,19 @@ risk:
     USDJPY:
       pip_size: 0.01
       max_spread_pips: 3.0
+  # Pro-Symbol-Pip-Parameter fuer PositionSizer.
+  # pip_size  : Pip-Groesse des Symbols (fuer SL/TP-Pip-Distanz-Berechnung)
+  # pip_value : Naehrerungsweiser Pip-Wert pro Lot in der Kontowaehrung
+  # XAUUSD: 100 Unzen * 0.01 USD/Pip = 1.00 USD/Pip/Lot
+  # USDJPY: abhaengig vom JPY/USD-Kurs (Naehrerungswert)
+  symbol_pip_params:
+    XAUUSD:
+      pip_size: 0.01
+      pip_value: 1.0
+    USDJPY:
+      pip_size: 0.01
+      pip_value: 7.0
+
   virtual_account_balance: 1000.0        # Effektives Risikokapital (1 % = 10 EUR Risiko/Trade)
   sl_atr_multiplier: 1.0                 # SL-Distanz (kleiner = engerer SL)
   tp_atr_multiplier: 2.0                 # TP-Distanz (2:1 RR, Ziel ~20 EUR)

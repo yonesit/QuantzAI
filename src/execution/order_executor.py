@@ -600,6 +600,49 @@ class OrderExecutor:
             "comment":      "QuantzAI",
         }
 
+        # ── Stops-Level-Sicherheitsklammer ────────────────────────────────────
+        # Verhindert retcode=10016 "Invalid stops" wenn der berechnete SL/TP
+        # den Broker-Mindestabstand unterschreitet (z.B. ATR-Fallback zu klein).
+        # Clampst auf Mindestabstand + 10% Sicherheitspuffer.
+        try:
+            sym_info = mt5.symbol_info(symbol)
+            tick     = mt5.symbol_info_tick(symbol)
+            if sym_info is not None and tick is not None:
+                stops_lvl = int(getattr(sym_info, "stops_level", 0) or 0)
+                if stops_lvl > 0:
+                    point     = float(getattr(sym_info, "point",  0.00001))
+                    digits    = int(getattr(sym_info,  "digits",  5))
+                    min_dist  = stops_lvl * point * 1.1   # 10% Sicherheitspuffer
+                    ref_price = float(tick.ask) if direction == "buy" else float(tick.bid)
+                    new_sl, new_tp = sl_price, tp_price
+                    if direction == "buy":
+                        if ref_price - sl_price < min_dist:
+                            new_sl = round(ref_price - min_dist, digits)
+                        if tp_price - ref_price < min_dist:
+                            new_tp = round(ref_price + min_dist, digits)
+                    else:
+                        if sl_price - ref_price < min_dist:
+                            new_sl = round(ref_price + min_dist, digits)
+                        if ref_price - tp_price < min_dist:
+                            new_tp = round(ref_price - min_dist, digits)
+                    if new_sl != sl_price or new_tp != tp_price:
+                        logger.warning(
+                            "[LIVE] SL/TP geclampt auf stops_level={lvl} Punkte | "
+                            "{sym} SL {old_sl:.5f}->{new_sl:.5f} "
+                            "TP {old_tp:.5f}->{new_tp:.5f}",
+                            lvl=stops_lvl, sym=symbol,
+                            old_sl=sl_price, new_sl=new_sl,
+                            old_tp=tp_price, new_tp=new_tp,
+                        )
+                        sl_price, tp_price = new_sl, new_tp
+                        request["sl"] = sl_price
+                        request["tp"] = tp_price
+        except Exception as _stops_exc:
+            logger.debug(
+                "[LIVE] stops_level-Pruefung uebersprungen (nicht kritisch): {e}",
+                e=_stops_exc,
+            )
+
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             retcode = result.retcode if result else "None"

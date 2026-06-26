@@ -482,6 +482,8 @@ def build_trading_stack(
 
     risk_cfg  = config.get("risk", {})
     model_cfg = config.get("model", {})
+    feat_cfg  = config.get("features", {})
+    atr_col   = f"atr_{feat_cfg.get('atr_period', 14)}"
 
     # ── Modell laden ───────────────────────────────────────────────────────
     logger.info("Lade SignalModel: {path}", path=model_path)
@@ -529,6 +531,7 @@ def build_trading_stack(
 
     position_sizer = PositionSizer(
         risk_per_trade_pct=risk_cfg.get("max_risk_per_trade_pct", 1.0),
+        symbol_params=risk_cfg.get("symbol_pip_params", {}),
     )
 
     correlation_guard = CorrelationGuard()
@@ -577,6 +580,7 @@ def build_trading_stack(
         balance_getter=_balance_getter,
         regime_detector=regime_detector,
         timeframe=timeframe,
+        atr_col=atr_col,
         signal_confidence_threshold=model_cfg.get("confidence_threshold", 0.55),
         mode=TradingMode.CONFIRM_REQUIRED,
         confirmation_callback=confirmation_callback,
@@ -663,6 +667,11 @@ def build_portfolio_stack(
     be_threshold       = risk_cfg.get("break_even_threshold", 0.35)
     be_spread_buf      = risk_cfg.get("break_even_spread_buffer_pips", 1.0)
 
+    # ATR-Spaltenname muss mit FeatureBuilder uebereinstimmen:
+    # FeatureBuilder erzeugt f"atr_{atr_period}" -> "atr_14" (bei atr_period=14)
+    feat_cfg = config.get("features", {})
+    atr_col  = f"atr_{feat_cfg.get('atr_period', 14)}"
+
     # ── Modelle laden ──────────────────────────────────────────────────────
     logger.info("Lade XAUUSD {tf} TF-Modell: {path}", tf=timeframe, path=xauusd_model_path)
     xauusd_model = SignalModel.load(xauusd_model_path)
@@ -713,6 +722,7 @@ def build_portfolio_stack(
     position_sizer = PositionSizer(
         risk_per_trade_pct=risk_cfg.get("max_risk_per_trade_pct", 1.0),
         sl_atr_multiplier=sl_multiplier,
+        symbol_params=risk_cfg.get("symbol_pip_params", {}),
     )
 
     # Gemeinsamer CorrelationGuard verhindert doppelte korrelierte Positionen
@@ -782,6 +792,7 @@ def build_portfolio_stack(
         timeframe=timeframe,
         sl_atr_multiplier=sl_multiplier,
         tp_atr_multiplier=tp_multiplier,
+        atr_col=atr_col,
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
@@ -818,6 +829,7 @@ def build_portfolio_stack(
         timeframe=timeframe,
         sl_atr_multiplier=sl_multiplier,
         tp_atr_multiplier=tp_multiplier,
+        atr_col=atr_col,
         signal_confidence_threshold=confidence,
         mode=TradingMode.AUTONOMOUS,
         confirmation_callback=confirmation_callback,
