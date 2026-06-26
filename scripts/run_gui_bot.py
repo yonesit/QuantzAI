@@ -978,9 +978,10 @@ class _LiveDashboardBackend:
     """
 
     def __init__(self, connector, order_executor) -> None:
-        self._connector = connector
-        self._executor  = order_executor
+        self._connector    = connector
+        self._executor     = order_executor
         self._contract_size_cache: dict[str, float] = {}
+        self._session_start = datetime.now(timezone.utc)
 
     def _get_contract_size(self, symbol: str) -> float:
         """Gibt die Kontraktgroesse des Symbols zurueck (gecacht)."""
@@ -1057,6 +1058,32 @@ class _LiveDashboardBackend:
                 total_profit, total_loss = _calc_total_stats(all_trades)
         except Exception:  # noqa: BLE001
             pass
+
+        # Live-Modus: MT5-Deal-Historie als autoritative Quelle (deckt bereits
+        # geschlossene Positionen ab, die nicht in paper_trades.json stehen).
+        # Nur wenn paper_trades.json keine Ergebnisse liefert (Live-Modus hat
+        # keine Paper-Trades).
+        if getattr(self._executor, "_live", False) and total_profit is None and total_loss is None:
+            try:
+                from src.data.mt5_connector import _load_mt5
+                mt5 = _load_mt5()
+                if mt5 is not None:
+                    deals = mt5.history_deals_get(
+                        self._session_start, datetime.now(timezone.utc)
+                    ) or []
+                    _OUT = getattr(mt5, "DEAL_ENTRY_OUT", 1)
+                    profits = [
+                        d.profit for d in deals
+                        if getattr(d, "entry", None) == _OUT and d.profit > 0
+                    ]
+                    losses = [
+                        d.profit for d in deals
+                        if getattr(d, "entry", None) == _OUT and d.profit <= 0
+                    ]
+                    total_profit = sum(profits) if profits else None
+                    total_loss   = sum(losses)  if losses  else None
+            except Exception:  # noqa: BLE001
+                pass
 
         return DashboardSnapshot(
             balance=info.get("balance"),

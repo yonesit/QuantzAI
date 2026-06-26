@@ -221,6 +221,56 @@ class TestLiveDashboardBackend:
         assert snap.total_gross_profit == 200.0
         assert snap.total_gross_loss == -80.0
 
+    def test_fetch_snapshot_live_mode_reads_mt5_deal_history(self, tmp_path):
+        """Im Live-Modus werden Gesamt-Gewinn/-Verlust aus MT5-Deal-Historie gelesen."""
+        connector = MagicMock()
+        connector.get_account_info.return_value = {
+            "balance": 10_000.0, "currency": "EUR", "equity": 10_000.0,
+            "login": 123, "server": "Demo", "leverage": 100, "is_demo": True,
+        }
+        executor = MagicMock()
+        executor.get_open_positions.return_value = []
+        executor._live = True
+        executor._paper_path = tmp_path / "paper_trades.json"  # existiert nicht
+
+        deal_win  = MagicMock(); deal_win.entry  = 1; deal_win.profit  = 150.0
+        deal_loss = MagicMock(); deal_loss.entry = 1; deal_loss.profit = -60.0
+        deal_open = MagicMock(); deal_open.entry = 0; deal_open.profit = 0.0
+
+        fake_mt5 = MagicMock()
+        fake_mt5.DEAL_ENTRY_OUT = 1
+        fake_mt5.history_deals_get.return_value = [deal_win, deal_loss, deal_open]
+
+        with patch("src.data.mt5_connector._load_mt5", return_value=fake_mt5):
+            backend = _LiveDashboardBackend(connector, executor)
+            snap = backend.fetch_snapshot()
+
+        assert snap.total_gross_profit == 150.0
+        assert snap.total_gross_loss   == -60.0
+
+    def test_fetch_snapshot_live_mode_none_when_no_closed_deals(self, tmp_path):
+        """Keine abgeschlossenen Deals -> beide Werte bleiben None."""
+        connector = MagicMock()
+        connector.get_account_info.return_value = {
+            "balance": 10_000.0, "currency": "EUR", "equity": 10_000.0,
+            "login": 123, "server": "Demo", "leverage": 100, "is_demo": True,
+        }
+        executor = MagicMock()
+        executor.get_open_positions.return_value = []
+        executor._live = True
+        executor._paper_path = tmp_path / "paper_trades.json"
+
+        fake_mt5 = MagicMock()
+        fake_mt5.DEAL_ENTRY_OUT = 1
+        fake_mt5.history_deals_get.return_value = []
+
+        with patch("src.data.mt5_connector._load_mt5", return_value=fake_mt5):
+            backend = _LiveDashboardBackend(connector, executor)
+            snap = backend.fetch_snapshot()
+
+        assert snap.total_gross_profit is None
+        assert snap.total_gross_loss   is None
+
 
 # ---------------------------------------------------------------------------
 # find_newest_model
