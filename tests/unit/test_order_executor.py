@@ -894,3 +894,144 @@ class TestMarkProfitLock70:
                 paper_trades_path=tmp_path / "t.json",
             )
         ex.mark_profit_lock_70(99)  # kein Crash, kein Effekt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Zweidimensionale Order-Modus-Tests
+#
+#  Zwei unabhaengige Dimensionen:
+#    1. Konto-Typ  : Demo-Konto vs. echtes Live-Konto (MT5-Kontoeinstellung)
+#    2. Order-Modus: live_trading_enabled=True  → echte MT5-Orders (mt5.order_send)
+#                   live_trading_enabled=False → Paper-Simulation (nur lokal)
+#
+#  Sicherheitsgate (Dimension 2 = LIVE):
+#    live_trading_enabled=True erfordert CONFIRM_LIVE=yes in der Umgebung.
+#    Fehlt diese Variable, wirft __init__ sofort RuntimeError – kein stiller
+#    Fallback, kein Weiterarbeiten. CONFIRM_LIVE darf NIEMALS programmatisch
+#    per os.environ.setdefault() gesetzt werden; es muss aus der .env kommen.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPaperModeNeverCallsOpenLive:
+    """
+    Wenn live_trading_enabled=False konfiguriert ist, darf _open_live()
+    unter keinen Umstaenden aufgerufen werden – egal welche Env-Variablen gesetzt sind.
+    """
+
+    def _make_paper_executor(self, tmp_path: Path, **env_overrides) -> OrderExecutor:
+        with patch.dict(os.environ, env_overrides):
+            return OrderExecutor(
+                connector=_connector(),
+                live_trading_enabled=False,
+                paper_trades_path=tmp_path / "paper_trades.json",
+            )
+
+    def test_open_position_never_calls_open_live(self, tmp_path: Path):
+        """open_position() mit live_trading_enabled=False ruft _open_live() nicht auf."""
+        ex = self._make_paper_executor(tmp_path)
+        with patch.object(ex, "_open_live", wraps=ex._open_live) as mock_live:
+            ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
+            ex.open_position("XAUUSD", "sell", 0.05, 1950.0, 1930.0)
+            ex.open_position("GBPUSD", "buy", 0.2, 1.2500, 1.2700)
+        mock_live.assert_not_called()
+
+    def test_open_live_not_called_even_with_confirm_live_set(self, tmp_path: Path):
+        """CONFIRM_LIVE=yes im Environment aendert nichts: Paper-Modus bleibt Paper-Modus."""
+        ex = self._make_paper_executor(tmp_path, CONFIRM_LIVE="yes")
+        with patch.object(ex, "_open_live", wraps=ex._open_live) as mock_live:
+            ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
+        mock_live.assert_not_called()
+
+    def test_live_flag_is_false_after_init(self, tmp_path: Path):
+        """self._live ist nach Init mit live_trading_enabled=False explizit False."""
+        ex = self._make_paper_executor(tmp_path)
+        assert ex._live is False
+
+    def test_open_position_routes_to_open_paper(self, tmp_path: Path):
+        """open_position() im Paper-Modus ruft _open_paper() auf."""
+        ex = self._make_paper_executor(tmp_path)
+        with patch.object(ex, "_open_paper", wraps=ex._open_paper) as mock_paper:
+            ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
+        mock_paper.assert_called_once()
+
+    def test_no_mt5_order_send_ever_called_in_paper_mode(self, tmp_path: Path):
+        """mt5.order_send wird im Paper-Modus bei open/close/trailing niemals aufgerufen."""
+        mt5 = _mt5_mock()
+        ex = self._make_paper_executor(tmp_path)
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            result = ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
+            ex.update_trailing_stop(result["ticket"], current_price=1.1050)
+            ex.close_position(result["ticket"])
+        mt5.order_send.assert_not_called()
+
+    def test_multiple_symbols_all_paper(self, tmp_path: Path):
+        """Viele Orders auf verschiedenen Symbolen bleiben alle im Paper-Modus."""
+        mt5 = _mt5_mock()
+        ex = self._make_paper_executor(tmp_path, CONFIRM_LIVE="yes")
+        symbols = [
+            ("EURUSD", "buy",  1.0950, 1.1100),
+            ("XAUUSD", "sell", 1950.0, 1930.0),
+            ("USDJPY", "buy",  150.00, 152.00),
+            ("GBPUSD", "sell", 1.2800, 1.2600),
+        ]
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            with patch.object(ex, "_open_live", wraps=ex._open_live) as mock_live:
+                for sym, direction, sl, tp in symbols:
+                    ex.open_position(sym, direction, 0.1, sl, tp)
+        mock_live.assert_not_called()
+        assert len(ex.get_open_positions()) == len(symbols)
+
+
+class TestLiveModeRequiresConfirmLiveEnv:
+    """
+    Sicherheitsgate: live_trading_enabled=True ohne CONFIRM_LIVE=yes in der
+    Umgebung muss sofort mit RuntimeError fehlschlagen.
+    CONFIRM_LIVE darf NIEMALS programmatisch per setdefault gesetzt werden.
+    """
+
+    def _env_without_confirm_live(self) -> dict:
+        return {k: v for k, v in os.environ.items() if k != "CONFIRM_LIVE"}
+
+    def test_live_without_confirm_live_raises_at_init(self, tmp_path: Path):
+        """RuntimeError beim Init wenn CONFIRM_LIVE fehlt."""
+        with patch.dict(os.environ, self._env_without_confirm_live(), clear=True):
+            with pytest.raises(RuntimeError, match="CONFIRM_LIVE"):
+                OrderExecutor(
+                    connector=_connector(),
+                    live_trading_enabled=True,
+                    paper_trades_path=tmp_path / "pt.json",
+                )
+
+    def test_live_with_wrong_value_raises_at_init(self, tmp_path: Path):
+        """CONFIRM_LIVE=YES (Grossbuchstaben) wird abgelehnt – nur 'yes' (klein)."""
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "YES"}):
+            with pytest.raises(RuntimeError, match="CONFIRM_LIVE"):
+                OrderExecutor(
+                    connector=_connector(),
+                    live_trading_enabled=True,
+                    paper_trades_path=tmp_path / "pt.json",
+                )
+
+    def test_live_with_correct_confirm_live_succeeds(self, tmp_path: Path):
+        """Mit CONFIRM_LIVE=yes startet live_trading_enabled=True ohne Fehler."""
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "yes"}):
+            ex = OrderExecutor(
+                connector=_connector(),
+                live_trading_enabled=True,
+                paper_trades_path=tmp_path / "pt.json",
+            )
+        assert ex._live is True
+
+    def test_live_mode_calls_open_live_not_open_paper(self, tmp_path: Path):
+        """Im Live-Modus wird _open_live() aufgerufen, nicht _open_paper()."""
+        mt5 = _mt5_mock()
+        with patch.dict(os.environ, {"CONFIRM_LIVE": "yes"}):
+            ex = OrderExecutor(
+                connector=_connector(),
+                live_trading_enabled=True,
+                paper_trades_path=tmp_path / "pt.json",
+            )
+        with patch("src.execution.order_executor._load_mt5", return_value=mt5):
+            with patch.object(ex, "_open_paper", wraps=ex._open_paper) as mock_paper:
+                ex.open_position("EURUSD", "buy", 0.1, 1.0950, 1.1100)
+        mock_paper.assert_not_called()
+        mt5.order_send.assert_called_once()

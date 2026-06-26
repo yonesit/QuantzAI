@@ -532,15 +532,12 @@ def build_trading_stack(
 
     correlation_guard = CorrelationGuard()
 
-    # ── AuditLog + OrderExecutor (Demo-Live-Modus) ───────────────────────
+    # ── AuditLog + OrderExecutor (echte MT5-Orders gegen Demo-Konto) ────────
+    # CONFIRM_LIVE=yes muss explizit in .env gesetzt sein – kein programmatischer
+    # Fallback. Fehlt der Eintrag, wirft OrderExecutor.__init__ RuntimeError.
     audit_log = AuditLog(
         db_path=str(_ROOT / "data" / "processed" / "audit.db"),
     )
-
-    # Aktiviert echte Demo-Positionen via MT5 (kein echtes Geld – Demo-Konto).
-    # CONFIRM_LIVE=yes wird hier programmatisch gesetzt; fuer Live-Accounts
-    # muss der Nutzer dies bewusst in der .env konfigurieren.
-    os.environ.setdefault("CONFIRM_LIVE", "yes")
 
     order_executor = OrderExecutor(
         connector=connector,
@@ -586,7 +583,7 @@ def build_trading_stack(
 
     logger.info(
         "TradingStack bereit | Symbol={sym} TF={tf} | "
-        "Modus=CONFIRM_REQUIRED | Demo-Live=True",
+        "Modus=CONFIRM_REQUIRED | Order-Ausfuehrung=LIVE (echte MT5-Orders)",
         sym=symbol, tf=timeframe,
     )
 
@@ -722,7 +719,8 @@ def build_portfolio_stack(
     audit_log = AuditLog(db_path=str(_ROOT / "data" / "processed" / "audit.db"))
 
     os.environ.setdefault("CONFIRM_AUTONOMOUS", "yes")
-    os.environ.setdefault("CONFIRM_LIVE", "yes")
+    # CONFIRM_LIVE=yes muss explizit in .env gesetzt sein – kein programmatischer
+    # Fallback. Fehlt der Eintrag, wirft OrderExecutor.__init__ RuntimeError beim Start.
     order_executor = OrderExecutor(
         connector=connector,
         live_trading_enabled=True,
@@ -844,7 +842,7 @@ def build_portfolio_stack(
     logger.info(
         "Portfolio-Stack bereit | XAUUSD {tf} TF + EURUSD {tf} MR | "
         "Virtuelles Kapital={vb} EUR | SL={sl}x ATR | TP={tp}x ATR | "
-        "BE-Threshold={be}% | Modus=AUTONOMOUS | Demo-Live=True",
+        "BE-Threshold={be}% | Modus=AUTONOMOUS | Order-Ausfuehrung=LIVE (echte MT5-Orders)",
         tf=timeframe, vb=virtual_balance,
         sl=sl_multiplier, tp=tp_multiplier, be=int(be_threshold * 100),
     )
@@ -1137,7 +1135,7 @@ def main(argv=None) -> int:
 
     logger.info(
         "MT5 verbunden | TF={tf} | Intervall={iv}s | "
-        "XAUUSD-Modell: {xm} | EURUSD-MR: {em} | Modus: AUTONOMOUS | Paper: True",
+        "XAUUSD-Modell: {xm} | EURUSD-MR: {em} | Modus: AUTONOMOUS | Order-Ausfuehrung: LIVE",
         tf=timeframe, iv=interval,
         xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
     )
@@ -1292,7 +1290,8 @@ def main(argv=None) -> int:
         "  Virtuelles Kap. : {vb} EUR  (1 %% Risiko = {risk:.0f} EUR/Trade)\n"
         "  SL/TP           : {sl}x / {tp}x ATR  |  Break-Even: {be}%% des TP-Weges\n"
         "  Modus           : AUTONOMOUS (kein Bestaetigungs-Dialog)\n"
-        "  Paper-Modus     : True  (KEIN echtes Geld, nur simulierte Trades)",
+        "  Konto-Typ       : Demo  (kein echtes Geld)\n"
+        "  Order-Modus     : LIVE  (echte MT5-Orders gegen Demo-Konto)",
         tf=timeframe, iv=interval,
         xm=xauusd_model_path.name, em=eurusd_mr_model_path.name,
         vb=risk_cfg.get("virtual_account_balance", 1000.0),
