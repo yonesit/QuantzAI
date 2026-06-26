@@ -31,6 +31,7 @@ import pandas as pd
 from loguru import logger
 
 from src.modes import ConfirmationCallback, TradingMode, is_autonomous_allowed
+from src.models.regime_detector import RegimeDetector
 
 # Timeframe -> Minuten pro Kerze
 _TIMEFRAME_MINUTES: dict[str, int] = {
@@ -93,6 +94,7 @@ class TradingOrchestrator:
         features_loader: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
         balance_getter: Optional[Callable[[], float]] = None,
         price_getter: Optional[Callable[[str], Optional[float]]] = None,
+        regime_detector: Optional[RegimeDetector] = None,
         timeframe: str = "H1",
         lookback_candles: int = 300,
         signal_confidence_threshold: float = 0.55,
@@ -126,6 +128,7 @@ class TradingOrchestrator:
         self._features_loader        = features_loader or self._default_features_loader
         self._balance_getter         = balance_getter
         self._price_getter           = price_getter
+        self._regime_detector        = regime_detector
         self._confirmation_callback  = confirmation_callback
 
         self._stop_event         = threading.Event()
@@ -197,6 +200,10 @@ class TradingOrchestrator:
 
         features_row = features.iloc[[-1]]
 
+        # Balance einmalig holen und RiskGuard sofort aktualisieren (vor is_trading_allowed)
+        balance = self._balance_getter() if self._balance_getter else 10_000.0
+        self._risk_guard.update_balance(balance)
+
         # ── Schritt 2: RiskGuard ──────────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 2: RiskGuard", sym=symbol)
         if not self._risk_guard.is_trading_allowed():
@@ -255,7 +262,6 @@ class TradingOrchestrator:
 
         # ── Schritt 7: PositionSizer ──────────────────────────────────────────
         logger.info("Zyklus | {sym} | Schritt 7: PositionSizer", sym=symbol)
-        balance     = self._balance_getter() if self._balance_getter else 10_000.0
         atr         = self._extract_value(features_row, self._atr_col,   0.001)
         close_price = self._extract_value(features_row, self._close_col, 1.0)
 
@@ -283,7 +289,25 @@ class TradingOrchestrator:
             logger.warning("Zyklus | {sym} | PositionSizer ungueltig: {r}", sym=symbol, r=size_result.rejection_reason)
             return result
 
-        multiplier = self._risk_guard.get_position_size_multiplier()
+        risk_multiplier = self._risk_guard.get_position_size_multiplier()
+        regime_multiplier = 1.0
+        if self._regime_detector is not None:
+            try:
+                regime = self._regime_detector.detect_regime(features)
+                regime_multiplier = self._regime_detector.get_position_size_multiplier(regime)
+                result["regime"] = regime
+                result["checks"].append({
+                    "name": "RegimeDetector",
+                    "passed": True,
+                    "reason": regime,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "RegimeDetector scheiterte: {exc} -> benutze Multiplier=1.0",
+                    exc=exc,
+                )
+
+        multiplier = risk_multiplier * regime_multiplier
         lot_size   = max(round(size_result.lot_size * multiplier, 8), 0.01)
 
         # ── SL / TP berechnen (benoetigt fuer Modus-Checks und Order) ────────────

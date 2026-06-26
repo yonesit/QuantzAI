@@ -156,8 +156,15 @@ class DataPipeline:
 
         report_path = self._save_quality_report(report, symbol, timeframe)
 
-        # 3. Build Features
-        features_df = self._feature_builder.build(clean_df)
+        # 3. Build Features (with optional H4/D1 for MTF features)
+        df_h4 = df_d1 = None
+        if timeframe == "H1":
+            df_h4 = self._fetch_higher_tf(symbol, end, lookback_candles=350, tf="H4")
+            df_d1 = self._fetch_higher_tf(symbol, end, lookback_candles=350, tf="D1")
+
+        features_df = self._feature_builder.build(
+            clean_df, symbol=symbol, timeframe=timeframe, df_h4=df_h4, df_d1=df_d1
+        )
         if progress_callback:
             progress_callback(1)
 
@@ -239,6 +246,36 @@ class DataPipeline:
             self._live_thread.join(timeout=5)
         logger.info("Live-Modus gestoppt.")
 
+    def _fetch_higher_tf(
+        self,
+        symbol: str,
+        end: datetime,
+        lookback_candles: int,
+        tf: str,
+    ) -> "pd.DataFrame | None":
+        """Fetches and validates a higher-timeframe OHLCV series for MTF features.
+
+        Uses a 1.5x calendar multiplier to compensate for weekend gaps so that
+        the result contains at least `lookback_candles` trading bars.
+        Returns None on any error (MTF features will be 0.0 / neutral).
+        """
+        tf_hours = {"H4": 4, "D1": 24, "W1": 168}.get(tf, 4)
+        start = end - timedelta(minutes=int(lookback_candles * tf_hours * 60 * 1.5))
+        try:
+            raw = self._router.get_ohlcv(symbol, tf, start, end)
+            raw = _ensure_timestamp_column(raw)
+            _report, clean = self._validator.validate(raw, symbol=symbol, timeframe=tf)
+            logger.debug(
+                "MTF {tf} {sym} | {n} Candles geladen", tf=tf, sym=symbol, n=len(clean)
+            )
+            return clean
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "MTF {tf}-Daten fuer {sym} nicht verfuegbar (h4/d1_trend=0): {exc}",
+                tf=tf, sym=symbol, exc=exc,
+            )
+            return None
+
     def _live_loop(self, symbol: str, timeframe: str, lookback_candles: int) -> None:
         while not self._stop_live.wait(timeout=self._live_interval):
             try:
@@ -254,7 +291,16 @@ class DataPipeline:
         report, clean_df = self._validator.validate(raw_df, symbol=symbol, timeframe=timeframe)
         self._save_quality_report(report, symbol, timeframe)
 
-        features_df = self._feature_builder.build(clean_df)
+        # MTF-Features – gleiche Logik wie run_batch() (nur fuer H1 relevant)
+        df_h4 = df_d1 = None
+        if timeframe == "H1":
+            end = datetime.now(timezone.utc)
+            df_h4 = self._fetch_higher_tf(symbol, end, lookback_candles=350, tf="H4")
+            df_d1 = self._fetch_higher_tf(symbol, end, lookback_candles=350, tf="D1")
+
+        features_df = self._feature_builder.build(
+            clean_df, symbol=symbol, timeframe=timeframe, df_h4=df_h4, df_d1=df_d1
+        )
 
         output_path = self._feature_path(symbol, timeframe, datetime.now(timezone.utc))
         features_df.to_parquet(output_path, engine="pyarrow")

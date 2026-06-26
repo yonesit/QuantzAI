@@ -15,12 +15,14 @@ from __future__ import annotations
 import os
 import threading
 import time
+from typing import Optional
 from unittest.mock import MagicMock, call, patch
 
 import pandas as pd
 import pytest
 
 from src.modes import TradingMode
+from src.models.regime_detector import RegimeDetector
 from src.orchestrator import TradingOrchestrator, _validate_mode_transition
 from src.risk.position_sizer import PositionSizeResult
 
@@ -58,6 +60,7 @@ def _make_orch(
     emergency=True,
     balance=10_000.0,
     mode: TradingMode = TradingMode.AUTONOMOUS,
+    regime_detector: Optional[RegimeDetector] = None,
 ) -> tuple[TradingOrchestrator, dict]:
     """Baut einen Orchestrator mit ausschliesslich Mocks."""
     pipeline    = MagicMock()
@@ -104,6 +107,7 @@ def _make_orch(
         emergency_handler=emerg,
         features_loader=lambda sym: feat_df,
         balance_getter=lambda: balance,
+        regime_detector=regime_detector,
         mode=mode,
     )
 
@@ -177,6 +181,41 @@ class TestRunCycleHappyPath:
         mocks["risk_guard"].get_position_size_multiplier.return_value = 0.5
         result = orch.run_cycle("EURUSD")
         assert result["lot_size"] == pytest.approx(0.1, abs=1e-6)
+    def test_lot_size_multiplied_by_regime_detector(self):
+        regime = MagicMock()
+        regime.name = "trending"
+        regime_multiplier = 0.5
+        regime_detector = MagicMock()
+        regime_detector.detect_regime.return_value = regime
+        regime_detector.get_position_size_multiplier.return_value = regime_multiplier
+
+        orch, mocks = _make_orch(
+            size_result=_make_size_result(lot=0.2),
+            regime_detector=regime_detector,
+        )
+        result = orch.run_cycle("EURUSD")
+        assert result["lot_size"] == pytest.approx(0.1, abs=1e-6)
+        assert result["regime"] == regime
+        assert any(check["name"] == "RegimeDetector" for check in result["checks"])
+
+    def test_live_execution_does_not_mark_paper(self):
+        orch, mocks = _make_orch(size_result=_make_size_result(lot=0.2))
+        mocks["executor"]._live = True
+
+        result = orch.run_cycle("EURUSD")
+
+        assert result.get("is_paper") is None
+        mocks["executor"].open_position.assert_called_once()
+
+    def test_risk_guard_update_balance_called_with_balance(self):
+        orch, mocks = _make_orch(balance=12_345.0)
+        orch.run_cycle("EURUSD")
+        mocks["risk_guard"].update_balance.assert_called_once_with(12_345.0)
+
+    def test_risk_guard_update_balance_called_even_when_blocked(self):
+        orch, mocks = _make_orch(risk_allowed=False, balance=5_000.0)
+        orch.run_cycle("EURUSD")
+        mocks["risk_guard"].update_balance.assert_called_once_with(5_000.0)
 
     def test_step_stopped_at_is_none_on_success(self):
         orch, _ = _make_orch()
@@ -584,9 +623,10 @@ class TestOptionalComponents:
         orch, mocks = _make_orch()
         orch._balance_getter = None
         orch.run_cycle("EURUSD")
-        # PositionSizer muss mit 10000.0 aufgerufen worden sein
+        # PositionSizer und RiskGuard muessen mit 10000.0 aufgerufen worden sein
         call_args = mocks["pos_sizer"].calculate_lot_size.call_args
         assert call_args[0][0] == 10_000.0
+        mocks["risk_guard"].update_balance.assert_called_once_with(10_000.0)
 
     def test_corr_guard_receives_open_positions(self):
         pos = [{"ticket": 1, "symbol": "GBPUSD", "direction": "buy"}]

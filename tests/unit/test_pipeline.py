@@ -204,6 +204,34 @@ class TestLiveUpdate:
         assert "output_path" in result
         assert Path(result["output_path"]).exists()
 
+    def test_live_update_passes_symbol_and_timeframe_to_builder(
+        self, pipeline, mock_feature_builder
+    ):
+        pipeline._live_update("GBPUSD", "H4", lookback_candles=300)
+        call = mock_feature_builder.build.call_args
+        assert call.kwargs.get("symbol") == "GBPUSD"
+        assert call.kwargs.get("timeframe") == "H4"
+
+    def test_live_update_h1_fetches_h4_and_d1(self, pipeline, mock_router):
+        pipeline._live_update("EURUSD", "H1", lookback_candles=300)
+        # get_ohlcv muss fuer H4 und D1 aufgerufen worden sein
+        ohlcv_calls = mock_router.get_ohlcv.call_args_list
+        called_tfs = [str(c) for c in ohlcv_calls]
+        assert any("H4" in s for s in called_tfs)
+        assert any("D1" in s for s in called_tfs)
+
+    def test_live_update_non_h1_does_not_fetch_mtf(self, pipeline, mock_router):
+        mock_router.get_ohlcv.reset_mock()
+        pipeline._live_update("XAUUSD", "H4", lookback_candles=300)
+        # kein get_ohlcv Aufruf fuer nicht-H1 Timeframe
+        mock_router.get_ohlcv.assert_not_called()
+
+    def test_live_update_h1_passes_df_h4_to_builder(self, pipeline, mock_feature_builder):
+        pipeline._live_update("EURUSD", "H1", lookback_candles=300)
+        call = mock_feature_builder.build.call_args
+        # df_h4 muss uebergeben worden sein (kann None sein wenn MTF-Fetch fehlschlug)
+        assert "df_h4" in call.kwargs
+
     def test_start_and_stop_live(self, pipeline):
         pipeline.start_live("EURUSD", "M1")
         assert pipeline._live_thread is not None

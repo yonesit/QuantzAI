@@ -368,7 +368,10 @@ class TestOrderExecutorIntegration:
         db = tmp_path / "audit.db"
         al = AuditLog(db)
         connector = MagicMock()
-        executor = OrderExecutor(connector, audit_log=al)
+        executor = OrderExecutor(
+            connector, audit_log=al,
+            paper_trades_path=str(tmp_path / "paper_trades.json"),
+        )
 
         executor.open_position("EURUSD", "buy", 0.1, 1.08, 1.10)
 
@@ -386,7 +389,10 @@ class TestOrderExecutorIntegration:
         db = tmp_path / "audit.db"
         al = AuditLog(db)
         connector = MagicMock()
-        executor = OrderExecutor(connector, audit_log=al)
+        executor = OrderExecutor(
+            connector, audit_log=al,
+            paper_trades_path=str(tmp_path / "paper_trades.json"),
+        )
 
         executor.open_position("GBPUSD", "sell", 0.2, 1.30, 1.28)
         ticket = executor.get_open_positions()[0]["ticket"]
@@ -405,7 +411,10 @@ class TestOrderExecutorIntegration:
 
     def test_executor_without_audit_log_still_works(self, tmp_path):
         connector = MagicMock()
-        executor = OrderExecutor(connector)  # kein audit_log
+        executor = OrderExecutor(
+            connector,
+            paper_trades_path=str(tmp_path / "paper_trades.json"),
+        )
         result = executor.open_position("EURUSD", "buy", 0.1, 1.08, 1.10)
         assert result["status"] == "open"
 
