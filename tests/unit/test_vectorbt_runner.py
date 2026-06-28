@@ -361,6 +361,59 @@ class TestSwapCosts:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Swap fliesst in Sharpe ein (SCHRITT B)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSwapAffectsSharpe:
+    def _prices_signals(self):
+        n = 200
+        idx = pd.date_range("2023-01-01", periods=n, freq="1d")
+        rng = np.random.default_rng(7)
+        prices = pd.Series(1.0 + np.cumsum(rng.normal(0.001, 0.004, n)), index=idx)
+        values = ["flat"] * n
+        for i in range(10, 160):       # ein langer Trade -> viele Naechte Swap
+            values[i] = "long"
+        sigs = pd.Series(values, index=idx, dtype=object)
+        return prices, sigs
+
+    def test_swap_changes_run_sharpe(self):
+        """swap != 0 muss den berechneten Sharpe nachweislich veraendern."""
+        prices, sigs = self._prices_signals()
+        r0 = BacktestRunner(BacktestConfig(
+            spread_pct=0.0, slippage_pips=0.0, swap_long_per_night=0.0, freq="1d"
+        )).run(prices, sigs)
+        r1 = BacktestRunner(BacktestConfig(
+            spread_pct=0.0, slippage_pips=0.0, swap_long_per_night=5.0, freq="1d"
+        )).run(prices, sigs)
+        assert abs(r1.sharpe_ratio - r0.sharpe_ratio) > 1e-6
+        # Swap-Kosten senken die Equity -> Sharpe sinkt (gewinnender Long-Trade)
+        assert r1.sharpe_ratio < r0.sharpe_ratio
+
+    def test_swap_adjusted_equity_deducts_from_exit(self):
+        idx = pd.date_range("2023-01-01", periods=5, freq="1d")
+        eq = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0], index=idx)
+        recs = pd.DataFrame([{
+            "Entry Timestamp": idx[0], "Exit Timestamp": idx[3], "Direction": "Long",
+        }])
+        cfg = BacktestConfig(swap_long_per_night=2.0)
+        adj = BacktestRunner._swap_adjusted_equity(eq, recs, cfg)
+        # 3 Naechte * 2.0 = 6.0 ab Exit-Bar (idx[3]) abgezogen
+        assert adj.iloc[0] == pytest.approx(100.0)   # vor Exit unveraendert
+        assert adj.iloc[2] == pytest.approx(102.0)
+        assert adj.iloc[3] == pytest.approx(103.0 - 6.0)
+        assert adj.iloc[4] == pytest.approx(104.0 - 6.0)
+
+    def test_swap_adjusted_equity_zero_swap_unchanged(self):
+        idx = pd.date_range("2023-01-01", periods=3, freq="1d")
+        eq = pd.Series([100.0, 101.0, 102.0], index=idx)
+        recs = pd.DataFrame([{
+            "Entry Timestamp": idx[0], "Exit Timestamp": idx[2], "Direction": "Long",
+        }])
+        adj = BacktestRunner._swap_adjusted_equity(eq, recs, BacktestConfig())
+        pd.testing.assert_series_equal(adj, eq)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  IS / OOS Split
 # ─────────────────────────────────────────────────────────────────────────────
 

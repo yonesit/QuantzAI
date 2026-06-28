@@ -126,3 +126,20 @@ anomaly_detection:
   lot_size_multiplier: 3.0           # Vielfaches des Lots-Durchschnitts
   max_consecutive_rejections: 5      # Max. aufeinanderfolgende Ablehnungen
   max_signal_changes_per_minute: 3   # Max. Signalwechsel pro Minute
+
+# Backtest-Kostenmodell (vectorbt) – realistische Demo-Konto-Naeherung
+# Genutzt von scripts/analyse_pnl_sharpe.py.
+backtest:
+  init_cash: 10000.0
+  spread_pct: 0.0001        # ~1 Pip EURUSD (Preisanteil pro Roundtrip)
+  slippage_pips: 1.0
+  # Swap = absolute Kosten pro Nacht, kalibriert auf das All-in-Notional
+  # (~10.000) des vectorbt-Backtests. Der All-in-Backtest haelt KEINE festen
+  # Lots, daher Umrechnung der Broker-Swaps auf das Notional:
+  #   EURUSD: ~10.000 Notional = ~0.1 Lot; Broker-Swap long ~ -0.55 USD/Nacht
+  #   XAUUSD: ~10.000 Notional = ~0.055 Lot; Broker-Swap ~ -6 USD/Lot/Nacht -> ~-0.33/Nacht
+  # Positive Werte = Kosten (werden von der Equity abgezogen).
+  swap:
+    EURUSD: {long: 0.55, short: 0.20}
+    XAUUSD: {long: 0.40, short: 0.40}
+    default: {long: 0.50, short: 0.50}

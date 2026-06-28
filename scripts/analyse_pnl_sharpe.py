@@ -47,6 +47,31 @@ LGBM_PARAMS = {
 _EXCLUDE = {"label", "timestamp", "open", "volume", "close", "high", "low"}
 
 
+def _load_swap(symbol: str) -> tuple[float, float]:
+    """Liest (swap_long, swap_short) pro Symbol aus config/config.yaml."""
+    import yaml
+
+    cfg_path = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
+    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    swap = (data.get("backtest", {}) or {}).get("swap", {}) or {}
+    entry = swap.get(symbol, swap.get("default", {"long": 0.0, "short": 0.0}))
+    return float(entry.get("long", 0.0)), float(entry.get("short", 0.0))
+
+
+def _build_config(symbol: str, swap_mode: str):
+    """Baut BacktestConfig fuer ein Symbol. swap_mode: 'config' oder 'noswap'."""
+    from src.backtesting.vectorbt_runner import BacktestConfig, timeframe_to_freq
+
+    swap_long, swap_short = (0.0, 0.0)
+    if swap_mode == "config":
+        swap_long, swap_short = _load_swap(symbol)
+    return BacktestConfig(
+        freq=timeframe_to_freq("H4"),
+        swap_long_per_night=swap_long,
+        swap_short_per_night=swap_short,
+    )
+
+
 def _fetch_and_validate(symbol: str, timeframe: str):
     from src.data.mt5_connector import MT5Connector
     from src.data.validator import DataValidator
@@ -122,34 +147,39 @@ def _print(name: str, agg: dict) -> None:
     print(f"{'=' * 56}\n")
 
 
+def _cfg_dict(cfg) -> dict:
+    return {
+        "spread_pct": cfg.spread_pct, "slippage_pips": cfg.slippage_pips,
+        "swap_long_per_night": cfg.swap_long_per_night,
+        "swap_short_per_night": cfg.swap_short_per_night,
+        "pip_size": cfg.pip_size, "freq": cfg.freq,
+    }
+
+
 def main() -> int:
-    from src.backtesting.vectorbt_runner import BacktestConfig, timeframe_to_freq
+    # swap_mode: 'config' (Swap aus config.yaml, Stufe B) oder 'noswap' (Stufe A).
+    out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("pnl_sharpe_result.json")
+    swap_mode = sys.argv[2] if len(sys.argv) > 2 else "config"
 
-    # SCHRITT A: aktuelle BacktestConfig-Defaults (Spread 0.0001, Slippage 1 Pip,
-    # Swap 0.0, pip_size 0.0001). freq = 4h fuer H4.
-    cfg = BacktestConfig(freq=timeframe_to_freq("H4"))
-    logger.info("BacktestConfig: spread_pct={s} slippage_pips={sl} swap_long={swl} "
-                "swap_short={sws} pip_size={p} freq={f}",
-                s=cfg.spread_pct, sl=cfg.slippage_pips, swl=cfg.swap_long_per_night,
-                sws=cfg.swap_short_per_night, p=cfg.pip_size, f=cfg.freq)
+    cfg_x = _build_config("XAUUSD", swap_mode)
+    cfg_e = _build_config("EURUSD", swap_mode)
+    logger.info("swap_mode={m} | XAUUSD swap=({xl},{xs}) | EURUSD swap=({el},{es})",
+                m=swap_mode, xl=cfg_x.swap_long_per_night, xs=cfg_x.swap_short_per_night,
+                el=cfg_e.swap_long_per_night, es=cfg_e.swap_short_per_night)
 
-    res_x, agg_x = _run_xauusd_tf(cfg)
-    res_e, agg_e = _run_eurusd_mr(cfg)
+    res_x, agg_x = _run_xauusd_tf(cfg_x)
+    res_e, agg_e = _run_eurusd_mr(cfg_e)
 
     _print("XAUUSD H4 TF (Test #3)", agg_x)
     _print("EURUSD H4 MR (Test #4)", agg_e)
 
     out = {
-        "config": {
-            "spread_pct": cfg.spread_pct, "slippage_pips": cfg.slippage_pips,
-            "swap_long_per_night": cfg.swap_long_per_night,
-            "swap_short_per_night": cfg.swap_short_per_night,
-            "pip_size": cfg.pip_size, "freq": cfg.freq,
-        },
+        "swap_mode": swap_mode,
+        "config_xauusd": _cfg_dict(cfg_x),
+        "config_eurusd": _cfg_dict(cfg_e),
         "XAUUSD_H4_TF": {"aggregate": agg_x, "windows": res_x},
         "EURUSD_H4_MR": {"aggregate": agg_e, "windows": res_e},
     }
-    out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("pnl_sharpe_result.json")
     out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
     logger.info("Ergebnis geschrieben -> {p}", p=out_path)
     return 0

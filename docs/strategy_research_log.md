@@ -331,40 +331,44 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | Stufe | Kosten | XAUUSD H4 TF | EURUSD H4 MR | 50/50 (Ø) |
 |-------|--------|-------------:|-------------:|----------:|
 | **Klassifikations-Proxy** (alt, „0.41") | keine (±1-Treffer) | −0.036 | +0.389 | +0.422 ¹ |
-| **A — P&L vectorbt** | Spread + Slippage (pip_size-Bug aktiv ²) | **+0.312** | **−0.189** | **+0.062** |
-| B — + Swap | Spread + Slippage + Swap | _folgt_ | _folgt_ | _folgt_ |
+| **A — P&L vectorbt** | Spread + Slippage (pip_size-Bug aktiv ²) | **+0.320** | **−0.172** | **+0.074** |
+| **B — + Swap** | Spread + Slippage + Swap | **+0.217** | **−0.393** | **−0.088** |
 | C — + XAUUSD pip_size-Fix | wie B, korrekte Gold-Slippage | _folgt_ | _folgt_ | _folgt_ |
 | D — + Look-Ahead-Fix | wie C, Entry = Open der Folgekerze | _folgt_ | _folgt_ | _folgt_ |
 | E — + Kommission | volle Kostenkette | _folgt_ | _folgt_ | _folgt_ |
 
 ¹ Proxy-50/50 = monatsgenaue 3-Wege-Ausrichtung (Ø OOS-Sharpe, Tabelle oben). Die A–E-50/50-Werte sind einfache Mittelwerte (s. o.).
 ² SCHRITT A nutzt bewusst die aktuellen `BacktestConfig`-Defaults inkl. des bekannten `pip_size=0.0001`-Bugs für XAUUSD (Slippage für Gold faktisch null). Korrektur in Stufe C.
+³ Die A-Werte wurden in Stufe B auf die **einheitliche Equity-basierte Sharpe-Methode** (`pnl_sharpe(equity.pct_change())`) umgestellt, damit alle Stufen identisch berechnet sind. Differenz zum ursprünglichen `pf.sharpe_ratio()` ist marginal (XAUUSD +0.312 → +0.320, EURUSD −0.189 → −0.172).
 
-### Detailwerte Stufe A (Median / Std / profitable Fenster)
+### Detailwerte Stufe A und B (Median / Std / profitable Fenster)
 
-| System | Ø P&L-Sharpe | Median | Std | Profitable Fenster | Trades |
-|--------|-------------:|-------:|----:|:------------------:|-------:|
-| XAUUSD H4 TF | +0.312 | +0.078 | 4.138 | 21/40 (53 %) | 560 |
-| EURUSD H4 MR | −0.189 | −0.339 | 3.414 | 18/40 (45 %) | 539 |
+| Stufe | System | Ø P&L-Sharpe | Median | Std | Profitable Fenster | Trades |
+|-------|--------|-------------:|-------:|----:|:------------------:|-------:|
+| A | XAUUSD H4 TF | +0.320 | +0.083 | 4.170 | 21/40 (53 %) | 560 |
+| A | EURUSD H4 MR | −0.172 | −0.316 | 3.441 | 18/40 (45 %) | 539 |
+| B | XAUUSD H4 TF | +0.217 | −0.008 | 4.187 | 20/40 (50 %) | 560 |
+| B | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
 
-**Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`,
-`swap=0.0`, `freq=4h`.
+**Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`, `swap=0.0`, `freq=4h`.
+**Config Stufe B (Swap, aus `config.yaml`):** XAUUSD `(long 0.40, short 0.40)`, EURUSD `(long 0.55, short 0.20)` — absolute Kosten/Nacht, kalibriert auf das ~10.000-Notional des All-in-Backtests (s. `config.yaml` → `backtest.swap`).
 
-### Erste Erkenntnis (wichtig, nicht beschönigt)
+### Erkenntnisse Stufe A + B (wichtig, nicht beschönigt)
 
 Der Proxy hat die beiden Systeme **gegensätzlich falsch** eingeschätzt:
 
 - **EURUSD H4 MR** sah im Proxy mit **+0.389** am besten aus — und trug den
   Großteil des „0.41"-Portfoliowerts. Im **echten P&L ist die Strategie negativ**
-  (Ø **−0.189**, Median **−0.339**, nur 45 % profitable Fenster). Der vermeintliche
-  Edge war ein Artefakt der kostenlosen ±1-Bewertung.
+  (Stufe A Ø **−0.172**; mit Swap Stufe B Ø **−0.393**, Median −0.513, nur 40 %
+  profitable Fenster). Der vermeintliche Edge war ein Artefakt der kostenlosen
+  ±1-Bewertung.
 - **XAUUSD H4 TF** war im Proxy faktisch null (−0.036), zeigt im P&L einen
-  leicht positiven Ø (+0.312), aber bei sehr hoher Streuung (Std 4.14) und
-  schwachem Median (+0.078) — kein robuster Edge.
-- Das **50/50-Portfolio** fällt von Proxy **+0.42** auf P&L **+0.06** — und steht
-  damit weit unter dem Live-Ziel (Sharpe ≥ 1.0). Die Stufen B–E (Swap, korrekte
-  Slippage, Look-Ahead-Fix, Kommission) werden diesen Wert voraussichtlich
-  weiter senken.
+  leicht positiven Ø (A +0.320), der aber schon durch **Swap** auf +0.217
+  (Median sogar −0.008) sinkt — bei hoher Streuung (Std ≈ 4.2). Kein robuster Edge.
+- Das **50/50-Portfolio** fällt von Proxy **+0.42** über A **+0.07** auf B
+  **−0.09** — also bereits mit Swap **negativ** und weit unter dem Live-Ziel
+  (Sharpe ≥ 1.0). Swap allein senkt den Portfolio-Ø um ~0.16. Die Stufen C–E
+  (korrekte Gold-Slippage, Look-Ahead-Fix, Kommission) folgen.
 
 ---
 

@@ -163,11 +163,16 @@ class BacktestRunner:
         equity_curve = pf.value()
         trade_records = pf.trades.records_readable
         pnl_adjusted = self._apply_swap_costs(trade_records, cfg)
-        result = self._compute_metrics(pf, pnl_adjusted, equity_curve)
+        # Swap-Kosten fliessen in die Equity-Serie ein, BEVOR der Sharpe darauf
+        # berechnet wird – sonst bleibt der Sharpe swap-blind (Bug-Fix Schritt B).
+        equity_for_sharpe = self._swap_adjusted_equity(equity_curve, trade_records, cfg)
+        result = self._compute_metrics(
+            pf, pnl_adjusted, equity_curve, equity_for_sharpe
+        )
 
         if is_mask is not None:
             is_sharpe, oos_sharpe = self._compute_is_oos_sharpe(
-                equity_curve, is_mask, cfg
+                equity_for_sharpe, is_mask, cfg
             )
             result.is_sharpe = is_sharpe
             result.oos_sharpe = oos_sharpe
@@ -328,6 +333,51 @@ class BacktestRunner:
 
         return pnl
 
+    @staticmethod
+    def _swap_adjusted_equity(
+        equity_curve: pd.Series,
+        trade_records: pd.DataFrame,
+        cfg: BacktestConfig,
+    ) -> pd.Series:
+        """
+        Zieht Swap-Kosten von der Equity-Serie ab, BEVOR daraus der Sharpe
+        berechnet wird.
+
+        Pro Trade werden die Swap-Kosten (Naechte * Swap/Nacht) ab dem
+        Exit-Zeitpunkt kumulativ von der Equity abgezogen. So schlaegt sich die
+        Overnight-Finanzierung in der Rendite-Serie nieder – und damit im
+        Sharpe –, nicht nur im Pro-Trade-PnL.
+
+        Returns die unveraenderte Equity-Serie wenn keine Swap-Kosten
+        konfiguriert sind oder keine Trades vorliegen.
+        """
+        if cfg.swap_long_per_night == 0.0 and cfg.swap_short_per_night == 0.0:
+            return equity_curve
+        if trade_records is None or trade_records.empty:
+            return equity_curve
+
+        deductions = pd.Series(0.0, index=equity_curve.index)
+        for idx in range(len(trade_records)):
+            row = trade_records.iloc[idx]
+            try:
+                entry_ts = pd.Timestamp(row["Entry Timestamp"])
+                exit_ts  = pd.Timestamp(row["Exit Timestamp"])
+                nights   = max(0, (exit_ts - entry_ts).days)
+                if nights == 0:
+                    continue
+                direction = str(row.get("Direction", "")).lower()
+                per_night = (
+                    cfg.swap_short_per_night if "short" in direction
+                    else cfg.swap_long_per_night
+                )
+                deductions.loc[deductions.index >= exit_ts] += nights * per_night
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Swap-Equity-Anpassung Fehler fuer Trade {i}: {exc}", i=idx, exc=exc
+                )
+
+        return equity_curve - deductions
+
     # ── Kennzahlen ────────────────────────────────────────────────────────────
 
     def _compute_metrics(
@@ -335,15 +385,18 @@ class BacktestRunner:
         pf: vbt.Portfolio,
         pnl_adjusted: np.ndarray,
         equity_curve: pd.Series,
+        equity_for_sharpe: Optional[pd.Series] = None,
     ) -> BacktestResult:
         """Berechnet alle Kennzahlen aus Portfolio und bereinigtem PnL."""
         total_return = float(pf.total_return())
         max_drawdown = float(pf.max_drawdown())
 
-        raw_sharpe  = pf.sharpe_ratio()
-        raw_sortino = pf.sortino_ratio()
-        sharpe_val  = _safe_float(raw_sharpe)
-        sortino_val = _safe_float(raw_sortino)
+        # Sharpe aus der (swap-bereinigten) Equity-Serie statt aus
+        # pf.sharpe_ratio(), damit konfigurierte Swap-Kosten tatsaechlich in die
+        # Kennzahl einfliessen. equity_for_sharpe == equity_curve wenn Swap=0.
+        eq_for_sharpe = equity_for_sharpe if equity_for_sharpe is not None else equity_curve
+        sharpe_val  = _safe_float(pnl_sharpe(eq_for_sharpe.pct_change(), self._cfg.freq))
+        sortino_val = _safe_float(pf.sortino_ratio())
 
         n_trades = len(pnl_adjusted)
 
