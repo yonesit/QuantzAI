@@ -333,13 +333,14 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | **Klassifikations-Proxy** (alt, „0.41") | keine (±1-Treffer) | −0.036 | +0.389 | +0.422 ¹ |
 | **A — P&L vectorbt** | Spread + Slippage (pip_size-Bug aktiv ²) | **+0.320** | **−0.172** | **+0.074** |
 | **B — + Swap** | Spread + Slippage + Swap | **+0.217** | **−0.393** | **−0.088** |
-| C — + XAUUSD pip_size-Fix | wie B, korrekte Gold-Slippage | _folgt_ | _folgt_ | _folgt_ |
+| **C — + XAUUSD pip_size-Fix** | wie B, korrekte Gold-Slippage ⁴ | **+0.209** | **−0.393** | **−0.092** |
 | D — + Look-Ahead-Fix | wie C, Entry = Open der Folgekerze | _folgt_ | _folgt_ | _folgt_ |
 | E — + Kommission | volle Kostenkette | _folgt_ | _folgt_ | _folgt_ |
 
 ¹ Proxy-50/50 = monatsgenaue 3-Wege-Ausrichtung (Ø OOS-Sharpe, Tabelle oben). Die A–E-50/50-Werte sind einfache Mittelwerte (s. o.).
 ² SCHRITT A nutzt bewusst die aktuellen `BacktestConfig`-Defaults inkl. des bekannten `pip_size=0.0001`-Bugs für XAUUSD (Slippage für Gold faktisch null). Korrektur in Stufe C.
 ³ Die A-Werte wurden in Stufe B auf die **einheitliche Equity-basierte Sharpe-Methode** (`pnl_sharpe(equity.pct_change())`) umgestellt, damit alle Stufen identisch berechnet sind. Differenz zum ursprünglichen `pf.sharpe_ratio()` ist marginal (XAUUSD +0.312 → +0.320, EURUSD −0.189 → −0.172).
+⁴ `pip_size` ist jetzt symbolspezifisch (`pip_size_for_symbol()`): XAUUSD 0.01 statt Forex-Default 0.0001. EURUSD bleibt unverändert (war schon 0.0001) → C = B für EURUSD. XAUUSD-Effekt bei `slippage_pips=1.0` modest (1 Gold-Pip statt ~0); bei realistischeren 5–20 Gold-Pips fiele der Wert stärker. Der Bug (Slippage für Gold faktisch null) ist behoben.
 
 ### Detailwerte Stufe A und B (Median / Std / profitable Fenster)
 
@@ -349,6 +350,8 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | A | EURUSD H4 MR | −0.172 | −0.316 | 3.441 | 18/40 (45 %) | 539 |
 | B | XAUUSD H4 TF | +0.217 | −0.008 | 4.187 | 20/40 (50 %) | 560 |
 | B | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
+| C | XAUUSD H4 TF | +0.209 | −0.016 | 4.185 | 19/40 (48 %) | 560 |
+| C | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
 
 **Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`, `swap=0.0`, `freq=4h`.
 **Config Stufe B (Swap, aus `config.yaml`):** XAUUSD `(long 0.40, short 0.40)`, EURUSD `(long 0.55, short 0.20)` — absolute Kosten/Nacht, kalibriert auf das ~10.000-Notional des All-in-Backtests (s. `config.yaml` → `backtest.swap`).

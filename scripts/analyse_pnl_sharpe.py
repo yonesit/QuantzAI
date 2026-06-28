@@ -60,13 +60,16 @@ def _load_swap(symbol: str) -> tuple[float, float]:
 
 def _build_config(symbol: str, swap_mode: str):
     """Baut BacktestConfig fuer ein Symbol. swap_mode: 'config' oder 'noswap'."""
-    from src.backtesting.vectorbt_runner import BacktestConfig, timeframe_to_freq
+    from src.backtesting.vectorbt_runner import (
+        BacktestConfig, pip_size_for_symbol, timeframe_to_freq,
+    )
 
     swap_long, swap_short = (0.0, 0.0)
     if swap_mode == "config":
         swap_long, swap_short = _load_swap(symbol)
     return BacktestConfig(
         freq=timeframe_to_freq("H4"),
+        pip_size=pip_size_for_symbol(symbol),  # SCHRITT C: XAUUSD -> 0.01
         swap_long_per_night=swap_long,
         swap_short_per_night=swap_short,
     )

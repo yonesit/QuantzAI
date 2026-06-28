@@ -498,6 +498,30 @@ def pnl_sharpe(returns: "pd.Series | np.ndarray", freq: str = "1h") -> Optional[
     return float(arr.mean() / std * np.sqrt(ann))
 
 
+# Symbolspezifische Pip-Groessen (sonst Forex-Default 0.0001).
+# XAUUSD: 2 Dezimalstellen -> 0.01 (sonst ist die Slippage fuer Gold faktisch
+# null, weil (slippage_pips * 0.0001) bei Goldpreis ~1800 verschwindet).
+# JPY-Paare: 3 Dezimalstellen -> 0.01.
+_SYMBOL_PIP_SIZE: dict[str, float] = {
+    "XAUUSD": 0.01,
+    "XAGUSD": 0.001,
+    "USDJPY": 0.01,
+    "EURJPY": 0.01,
+    "GBPJPY": 0.01,
+}
+
+
+def pip_size_for_symbol(symbol: str, default: float = 0.0001) -> float:
+    """
+    Gibt die korrekte Pip-Groesse fuer ein Symbol zurueck.
+
+    Forex-Majors: 0.0001 (Default). XAUUSD: 0.01. JPY-Paare: 0.01.
+    Verhindert den Bug, dass die Backtest-Slippage fuer Gold mit dem
+    Forex-Default 0.0001 faktisch null wird.
+    """
+    return _SYMBOL_PIP_SIZE.get(symbol.upper(), default)
+
+
 def timeframe_to_freq(timeframe: str) -> str:
     """
     Konvertiert MT5-Zeitrahmen-Notation in pandas-Frequenz-String.

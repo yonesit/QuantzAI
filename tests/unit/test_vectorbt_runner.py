@@ -30,6 +30,7 @@ from src.backtesting.vectorbt_runner import (
     BacktestResult,
     BacktestRunner,
     _safe_float,
+    pip_size_for_symbol,
     timeframe_to_freq,
 )
 
@@ -579,6 +580,56 @@ class TestRunWithModel:
 
         _runner().run_with_model(df, signal_func=_shape_capture)
         assert all(shape == (1, 2) for shape in row_shapes)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Symbolspezifische pip_size (SCHRITT C)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSymbolPipSize:
+    def test_forex_major_default(self):
+        assert pip_size_for_symbol("EURUSD") == 0.0001
+        assert pip_size_for_symbol("GBPUSD") == 0.0001
+
+    def test_xauusd_is_two_decimals(self):
+        assert pip_size_for_symbol("XAUUSD") == 0.01
+
+    def test_jpy_pairs(self):
+        assert pip_size_for_symbol("USDJPY") == 0.01
+
+    def test_case_insensitive(self):
+        assert pip_size_for_symbol("xauusd") == 0.01
+
+    def test_unknown_falls_back_to_default(self):
+        assert pip_size_for_symbol("FOOBAR") == 0.0001
+
+    def test_xauusd_slippage_not_effectively_zero(self):
+        """
+        Regression gegen den pip_size-Bug: Auf Goldpreis-Niveau (~1800) darf die
+        Slippage mit korrekter pip_size (0.01) NICHT faktisch null sein – im
+        Gegensatz zum Forex-Default 0.0001.
+        """
+        n = 300
+        idx = pd.date_range("2023-01-01", periods=n, freq="4h")
+        rng = np.random.default_rng(3)
+        prices = pd.Series(1800.0 + np.cumsum(rng.normal(0.0, 1.5, n)), index=idx)
+        values = ["flat"] * n
+        for i in range(0, n, 6):                 # viele Roundtrips
+            for k in range(i, min(i + 3, n)):
+                values[k] = "long"
+        sigs = pd.Series(values, index=idx, dtype=object)
+
+        cfg_bug = BacktestConfig(spread_pct=0.0, slippage_pips=5.0,
+                                 pip_size=0.0001, freq="4h")   # Forex-Default = Bug
+        cfg_fix = BacktestConfig(spread_pct=0.0, slippage_pips=5.0,
+                                 pip_size=0.01, freq="4h")      # korrekt fuer Gold
+
+        r_bug = BacktestRunner(cfg_bug).run(prices, sigs)
+        r_fix = BacktestRunner(cfg_fix).run(prices, sigs)
+
+        # Korrekte pip_size -> 100x mehr Slippage-Kosten -> messbar geringerer Return
+        assert r_fix.total_return < r_bug.total_return
+        assert abs(r_fix.total_return - r_bug.total_return) > 1e-4
 
 
 # ─────────────────────────────────────────────────────────────────────────────
