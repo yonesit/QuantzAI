@@ -633,6 +633,57 @@ class TestSymbolPipSize:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  Look-Ahead-Fix: Entry zum Folgekerzen-Preis (SCHRITT D)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLookAheadFix:
+    def test_execution_price_is_next_bar(self):
+        idx = pd.date_range("2023-01-01", periods=4, freq="4h")
+        close = pd.Series([100.0, 101.0, 102.0, 103.0], index=idx)
+        ep = BacktestRunner._execution_price(close)
+        assert ep.iloc[0] == pytest.approx(101.0)   # Folgekerze statt 100
+        assert ep.iloc[1] == pytest.approx(102.0)
+        assert ep.iloc[2] == pytest.approx(103.0)
+        assert ep.iloc[3] == pytest.approx(103.0)   # letzte Kerze: eigener Close
+        assert ep.iloc[0] != close.iloc[0]          # != Signal-Bar-Close
+
+    def test_execution_price_no_nan(self):
+        idx = pd.date_range("2023-01-01", periods=5, freq="4h")
+        close = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=idx)
+        ep = BacktestRunner._execution_price(close)
+        assert not ep.isna().any()
+
+    def test_trade_record_entry_price_differs_from_signal_close(self):
+        """Entry-Preis in den Trade-Records = Folgekerzen-Close, NICHT Signal-Bar-Close."""
+        import vectorbt as vbt
+
+        n = 30
+        idx = pd.date_range("2023-01-01", periods=n, freq="4h")
+        close = pd.Series(100.0 + np.arange(n), index=idx)  # alle Werte verschieden
+        values = ["flat"] * n
+        for i in range(10, 15):
+            values[i] = "long"                              # Entry-Signal bei Bar 10
+        sigs = pd.Series(values, index=idx, dtype=object)
+
+        e, ex, se, sx = BacktestRunner._signals_to_entries(sigs)
+        price = BacktestRunner._execution_price(close)
+        pf = vbt.Portfolio.from_signals(
+            close=close, entries=e, exits=ex, short_entries=se, short_exits=sx,
+            price=price, init_cash=10_000.0, freq="4h",
+        )
+        rec = pf.trades.records_readable
+        assert len(rec) >= 1
+
+        entry_col = next(c for c in rec.columns if "Entry Price" in c)
+        entry_price = float(rec.iloc[0][entry_col])
+        signal_bar_close = float(close.iloc[10])    # Bar des Entry-Signals
+        next_bar_close = float(close.iloc[11])      # Folgekerze
+
+        assert entry_price != pytest.approx(signal_bar_close)
+        assert entry_price == pytest.approx(next_bar_close)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  timeframe_to_freq
 # ─────────────────────────────────────────────────────────────────────────────
 

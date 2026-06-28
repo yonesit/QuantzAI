@@ -334,13 +334,14 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | **A — P&L vectorbt** | Spread + Slippage (pip_size-Bug aktiv ²) | **+0.320** | **−0.172** | **+0.074** |
 | **B — + Swap** | Spread + Slippage + Swap | **+0.217** | **−0.393** | **−0.088** |
 | **C — + XAUUSD pip_size-Fix** | wie B, korrekte Gold-Slippage ⁴ | **+0.209** | **−0.393** | **−0.092** |
-| D — + Look-Ahead-Fix | wie C, Entry = Open der Folgekerze | _folgt_ | _folgt_ | _folgt_ |
+| **D — + Look-Ahead-Fix** | wie C, Entry = Close der Folgekerze ⁵ | **+0.272** | **−1.032** | **−0.380** |
 | E — + Kommission | volle Kostenkette | _folgt_ | _folgt_ | _folgt_ |
 
 ¹ Proxy-50/50 = monatsgenaue 3-Wege-Ausrichtung (Ø OOS-Sharpe, Tabelle oben). Die A–E-50/50-Werte sind einfache Mittelwerte (s. o.).
 ² SCHRITT A nutzt bewusst die aktuellen `BacktestConfig`-Defaults inkl. des bekannten `pip_size=0.0001`-Bugs für XAUUSD (Slippage für Gold faktisch null). Korrektur in Stufe C.
 ³ Die A-Werte wurden in Stufe B auf die **einheitliche Equity-basierte Sharpe-Methode** (`pnl_sharpe(equity.pct_change())`) umgestellt, damit alle Stufen identisch berechnet sind. Differenz zum ursprünglichen `pf.sharpe_ratio()` ist marginal (XAUUSD +0.312 → +0.320, EURUSD −0.189 → −0.172).
 ⁴ `pip_size` ist jetzt symbolspezifisch (`pip_size_for_symbol()`): XAUUSD 0.01 statt Forex-Default 0.0001. EURUSD bleibt unverändert (war schon 0.0001) → C = B für EURUSD. XAUUSD-Effekt bei `slippage_pips=1.0` modest (1 Gold-Pip statt ~0); bei realistischeren 5–20 Gold-Pips fiele der Wert stärker. Der Bug (Slippage für Gold faktisch null) ist behoben.
+⁵ Ausführung zum Close der Folgekerze (`close.shift(-1)`) statt zum Signal-Bar-Close. **Asymmetrischer Effekt:** XAUUSD-Trendfolge leicht besser (+0.209 → +0.272), EURUSD-**Mean-Reversion bricht ein** (−0.393 → −1.032). Plausibel: MR fängt die Gegenbewegung nur ab, wenn man auf der Abweichungs-Kerze selbst einsteigt; eine Kerze später ist die Reversion meist vorbei. Der zuvor scheinbare MR-Edge war damit zu großen Teilen ein Look-Ahead-Artefakt.
 
 ### Detailwerte Stufe A und B (Median / Std / profitable Fenster)
 
@@ -352,6 +353,8 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | B | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
 | C | XAUUSD H4 TF | +0.209 | −0.016 | 4.185 | 19/40 (48 %) | 560 |
 | C | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
+| D | XAUUSD H4 TF | +0.272 | +0.858 | 3.264 | 23/40 (58 %) | 560 |
+| D | EURUSD H4 MR | −1.032 | −1.309 | 3.253 | 14/40 (35 %) | 539 |
 
 **Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`, `swap=0.0`, `freq=4h`.
 **Config Stufe B (Swap, aus `config.yaml`):** XAUUSD `(long 0.40, short 0.40)`, EURUSD `(long 0.55, short 0.20)` — absolute Kosten/Nacht, kalibriert auf das ~10.000-Notional des All-in-Backtests (s. `config.yaml` → `backtest.swap`).

@@ -148,12 +148,18 @@ class BacktestRunner:
         fees_per_side = cfg.spread_pct / 2.0
         slippage_per_side = (cfg.slippage_pips * cfg.pip_size) / avg_price / 2.0
 
+        # Look-Ahead-Fix (Schritt D): Signale entstehen aus den Daten der Kerze i,
+        # ausgefuehrt wird aber zum Preis der FOLGEkerze (i+1) – nicht zum Close
+        # derselben Kerze, der das Signal erst erzeugt hat.
+        exec_price = self._execution_price(close)
+
         pf = vbt.Portfolio.from_signals(
             close=close,
             entries=entries,
             exits=exits,
             short_entries=short_entries,
             short_exits=short_exits,
+            price=exec_price,
             fees=fees_per_side,
             slippage=slippage_per_side,
             init_cash=cfg.init_cash,
@@ -290,6 +296,21 @@ class BacktestRunner:
             pd.Series(short_entries, index=idx),
             pd.Series(short_exits,   index=idx),
         )
+
+    # ── Ausfuehrungspreis (Look-Ahead-Fix) ────────────────────────────────────
+
+    @staticmethod
+    def _execution_price(close: pd.Series) -> pd.Series:
+        """
+        Ausfuehrungspreis = Preis der FOLGEkerze (Look-Ahead-Fix, Schritt D).
+
+        Ein Signal aus Kerze i darf nicht zum Close von Kerze i ausgefuehrt
+        werden (genau der Preis, der das Signal erzeugt hat), sondern fruehestens
+        zum naechsten verfuegbaren Preis. Hier: Close der Folgekerze
+        (``close.shift(-1)``). Die letzte Kerze hat keinen Nachfolger und behaelt
+        ihren eigenen Close (kein Trade nach dem Datenende moeglich).
+        """
+        return close.shift(-1).fillna(close)
 
     # ── Swap-Kosten ───────────────────────────────────────────────────────────
 
