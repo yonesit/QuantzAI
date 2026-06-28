@@ -86,6 +86,7 @@ class TestBacktestConfig:
         assert cfg.init_cash == 10_000.0
         assert cfg.spread_pct == 0.0001
         assert cfg.slippage_pips == 1.0
+        assert cfg.commission_pct == 0.0003
         assert cfg.pip_size == 0.0001
         assert cfg.swap_long_per_night == 0.0
         assert cfg.swap_short_per_night == 0.0
@@ -681,6 +682,46 @@ class TestLookAheadFix:
 
         assert entry_price != pytest.approx(signal_bar_close)
         assert entry_price == pytest.approx(next_bar_close)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Kommission (SCHRITT E)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCommission:
+    def _prices_signals(self, seed: int = 11):
+        n = 200
+        idx = pd.date_range("2023-01-01", periods=n, freq="4h")
+        rng = np.random.default_rng(seed)
+        prices = pd.Series(100.0 + np.cumsum(rng.normal(0.02, 0.5, n)), index=idx)
+        values = ["flat"] * n
+        for i in range(0, n, 8):            # viele Roundtrips -> Kommission beisst
+            for k in range(i, min(i + 4, n)):
+                values[k] = "long"
+        return prices, pd.Series(values, index=idx, dtype=object)
+
+    def test_commission_changes_sharpe(self):
+        """commission_pct != 0 muss den Sharpe nachweislich veraendern."""
+        prices, sigs = self._prices_signals()
+        r0 = BacktestRunner(BacktestConfig(
+            spread_pct=0.0, slippage_pips=0.0, commission_pct=0.0, freq="4h"
+        )).run(prices, sigs)
+        r1 = BacktestRunner(BacktestConfig(
+            spread_pct=0.0, slippage_pips=0.0, commission_pct=0.001, freq="4h"
+        )).run(prices, sigs)
+        assert abs(r1.sharpe_ratio - r0.sharpe_ratio) > 1e-6
+        assert r1.total_return < r0.total_return
+
+    def test_commission_adds_to_spread_not_replaces(self):
+        """fees_per_side = halber Spread + Kommission -> hoehere Kosten als Spread allein."""
+        prices, sigs = self._prices_signals(seed=5)
+        r_spread = BacktestRunner(BacktestConfig(
+            spread_pct=0.0002, slippage_pips=0.0, commission_pct=0.0, freq="4h"
+        )).run(prices, sigs)
+        r_both = BacktestRunner(BacktestConfig(
+            spread_pct=0.0002, slippage_pips=0.0, commission_pct=0.0003, freq="4h"
+        )).run(prices, sigs)
+        assert r_both.total_return < r_spread.total_return
 
 
 # ─────────────────────────────────────────────────────────────────────────────

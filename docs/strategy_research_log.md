@@ -335,13 +335,14 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | **B — + Swap** | Spread + Slippage + Swap | **+0.217** | **−0.393** | **−0.088** |
 | **C — + XAUUSD pip_size-Fix** | wie B, korrekte Gold-Slippage ⁴ | **+0.209** | **−0.393** | **−0.092** |
 | **D — + Look-Ahead-Fix** | wie C, Entry = Close der Folgekerze ⁵ | **+0.272** | **−1.032** | **−0.380** |
-| E — + Kommission | volle Kostenkette | _folgt_ | _folgt_ | _folgt_ |
+| **E — + Kommission** | **volle Kostenkette** ⁶ | **−0.370** | **−2.299** | **−1.334** |
 
 ¹ Proxy-50/50 = monatsgenaue 3-Wege-Ausrichtung (Ø OOS-Sharpe, Tabelle oben). Die A–E-50/50-Werte sind einfache Mittelwerte (s. o.).
 ² SCHRITT A nutzt bewusst die aktuellen `BacktestConfig`-Defaults inkl. des bekannten `pip_size=0.0001`-Bugs für XAUUSD (Slippage für Gold faktisch null). Korrektur in Stufe C.
 ³ Die A-Werte wurden in Stufe B auf die **einheitliche Equity-basierte Sharpe-Methode** (`pnl_sharpe(equity.pct_change())`) umgestellt, damit alle Stufen identisch berechnet sind. Differenz zum ursprünglichen `pf.sharpe_ratio()` ist marginal (XAUUSD +0.312 → +0.320, EURUSD −0.189 → −0.172).
 ⁴ `pip_size` ist jetzt symbolspezifisch (`pip_size_for_symbol()`): XAUUSD 0.01 statt Forex-Default 0.0001. EURUSD bleibt unverändert (war schon 0.0001) → C = B für EURUSD. XAUUSD-Effekt bei `slippage_pips=1.0` modest (1 Gold-Pip statt ~0); bei realistischeren 5–20 Gold-Pips fiele der Wert stärker. Der Bug (Slippage für Gold faktisch null) ist behoben.
 ⁵ Ausführung zum Close der Folgekerze (`close.shift(-1)`) statt zum Signal-Bar-Close. **Asymmetrischer Effekt:** XAUUSD-Trendfolge leicht besser (+0.209 → +0.272), EURUSD-**Mean-Reversion bricht ein** (−0.393 → −1.032). Plausibel: MR fängt die Gegenbewegung nur ab, wenn man auf der Abweichungs-Kerze selbst einsteigt; eine Kerze später ist die Reversion meist vorbei. Der zuvor scheinbare MR-Edge war damit zu großen Teilen ein Look-Ahead-Artefakt.
+⁶ `commission_pct=0.0003` pro Seite (zusätzlich zum Spread), ≈ 3 USD je 0.1 Lot / Seite (Fusion-Markets-Raw-Größenordnung) bezogen auf das ~10.000-Notional. Beide Systeme fallen deutlich (XAUUSD +0.272 → −0.370; EURUSD −1.032 → −2.299). **Caveat:** Der All-in-Backtest wendet die Kommission auf das volle Equity-Notional je Trade an; die absolute Kosten-Magnitude hängt damit von der (hier nicht realistisch modellierten) Positionsgröße ab. Der qualitative Befund (kein Edge nach Kosten) ist robust, der exakte E-Wert ist eine Näherung.
 
 ### Detailwerte Stufe A und B (Median / Std / profitable Fenster)
 
@@ -355,26 +356,56 @@ echten Preisen und konfigurierbaren Kosten simuliert.
 | C | EURUSD H4 MR | −0.393 | −0.513 | 3.464 | 16/40 (40 %) | 539 |
 | D | XAUUSD H4 TF | +0.272 | +0.858 | 3.264 | 23/40 (58 %) | 560 |
 | D | EURUSD H4 MR | −1.032 | −1.309 | 3.253 | 14/40 (35 %) | 539 |
+| E | XAUUSD H4 TF | −0.370 | +0.114 | 3.163 | 21/40 (53 %) | 560 |
+| E | EURUSD H4 MR | −2.299 | −2.049 | 3.004 | 9/40 (23 %) | 539 |
 
 **Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`, `swap=0.0`, `freq=4h`.
 **Config Stufe B (Swap, aus `config.yaml`):** XAUUSD `(long 0.40, short 0.40)`, EURUSD `(long 0.55, short 0.20)` — absolute Kosten/Nacht, kalibriert auf das ~10.000-Notional des All-in-Backtests (s. `config.yaml` → `backtest.swap`).
 
-### Erkenntnisse Stufe A + B (wichtig, nicht beschönigt)
+### Endstand Stufe A–E — Fazit (wichtig, nicht beschönigt)
 
-Der Proxy hat die beiden Systeme **gegensätzlich falsch** eingeschätzt:
+Der vollständig kostenbereinigte P&L-Sharpe liegt **klar im negativen Bereich**
+und damit **weit unter dem alten Proxy-Wert „0.41" und unter 0**. Das ist ein
+**erwartetes und wichtiges Ergebnis**, kein Fehler: Es bestätigt, dass der
+bisher kommunizierte „OOS-Sharpe ~0.41" ein Artefakt der kostenlosen
+±1-Klassifikationsbewertung war und **kein realer Handels-Edge**.
 
-- **EURUSD H4 MR** sah im Proxy mit **+0.389** am besten aus — und trug den
-  Großteil des „0.41"-Portfoliowerts. Im **echten P&L ist die Strategie negativ**
-  (Stufe A Ø **−0.172**; mit Swap Stufe B Ø **−0.393**, Median −0.513, nur 40 %
-  profitable Fenster). Der vermeintliche Edge war ein Artefakt der kostenlosen
-  ±1-Bewertung.
-- **XAUUSD H4 TF** war im Proxy faktisch null (−0.036), zeigt im P&L einen
-  leicht positiven Ø (A +0.320), der aber schon durch **Swap** auf +0.217
-  (Median sogar −0.008) sinkt — bei hoher Streuung (Std ≈ 4.2). Kein robuster Edge.
-- Das **50/50-Portfolio** fällt von Proxy **+0.42** über A **+0.07** auf B
-  **−0.09** — also bereits mit Swap **negativ** und weit unter dem Live-Ziel
-  (Sharpe ≥ 1.0). Swap allein senkt den Portfolio-Ø um ~0.16. Die Stufen C–E
-  (korrekte Gold-Slippage, Look-Ahead-Fix, Kommission) folgen.
+**Portfolio-Ø OOS-Sharpe (50/50) über die Kostenstufen:**
+
+```
+Proxy  +0.42   (±1, ohne Kosten)        ← bisher kommuniziert
+A      +0.07   + Spread + Slippage
+B      -0.09   + Swap
+C      -0.09   + korrekte Gold-Slippage
+D      -0.38   + Look-Ahead-Fix
+E      -1.33   + Kommission (volle Kostenkette)
+```
+
+- **EURUSD H4 MR** ist der größte Verlierer: Proxy **+0.389** → voll bereinigt
+  **−2.299** (nur 9/40 profitable Fenster). Den größten Einbruch verursacht der
+  **Look-Ahead-Fix** — der scheinbare MR-Edge entstand fast vollständig dadurch,
+  dass im Proxy zum selben Close eingestiegen wurde, der das Reversions-Signal
+  erzeugte.
+- **XAUUSD H4 TF** ist robuster, aber ebenfalls ohne tragfähigen Edge: voll
+  bereinigt Ø **−0.370** (Median +0.114, 53 % profitable Fenster) bei hoher
+  Streuung. Kein verlässlicher positiver Erwartungswert.
+- Das **50/50-Portfolio** fällt monoton mit jeder realistischen Kostenkomponente
+  von **+0.42** auf **−1.33** — meilenweit unter dem Live-Ziel (Sharpe ≥ 1.0).
+
+**Konsequenz:** Auf Basis dieser Daten/Modelle gibt es **keinen nachgewiesenen
+Profit-Edge** für das aktuelle H4-Portfolio. Vor einem echten Live-Einsatz muss
+die Strategie grundlegend überarbeitet werden (andere Signale/Features/Labels,
+realistische Positionsgrößen statt All-in, ggf. niedrigere Handelsfrequenz zur
+Kostenreduktion). Die alte „0.41"-Zahl darf nicht mehr als Edge-Beleg dienen.
+
+**Methodische Caveats (Transparenz):** (1) Der vectorbt-Lauf nutzt All-in-Sizing
+(100 % Equity je Trade); reale Positionsgrößen (1–2 % Risiko) würden Kosten- und
+Sharpe-Magnituden verschieben. (2) Pro-Fenster-Sharpes über je ~1 Monat H4
+(~120 Bars, ~14 Trades) sind verrauscht; der Ø reagiert stark auf einzelne
+Ausreißer-Fenster (Median teils deutlich höher). (3) Swap/Kommission sind auf
+das ~10.000-Notional kalibrierte Näherungen. Der **qualitative** Befund (kein
+Edge nach Kosten) ist über alle Stufen hinweg stabil; die exakten Zahlen sind
+Näherungen.
 
 ---
 

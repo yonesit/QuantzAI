@@ -46,6 +46,10 @@ class BacktestConfig:
     spread_pct                  : Spread als Anteil des Handelspreises pro Seite
                                   (z.B. 0.0001 = 1 Pip bei EUR/USD um 1.0).
     slippage_pips               : Zusaetzlicher Slippage-Aufschlag in Pips.
+    commission_pct              : Broker-Kommission als Anteil des Handelswerts
+                                  PRO SEITE, zusaetzlich zum Spread. Default 0.0003
+                                  entspricht ~3 USD je 0.1 Lot (10.000 Notional)
+                                  pro Seite – Groessenordnung Fusion-Markets-Raw.
     pip_size                    : Pip-Groesse des Instruments (Standard: 0.0001).
     swap_long_per_night         : Swap-Kosten pro gehaltener Nacht fuer Long-Positionen
                                   (in Kontowaehrung, positiv = Kosten).
@@ -58,6 +62,7 @@ class BacktestConfig:
     init_cash: float = 10_000.0
     spread_pct: float = 0.0001
     slippage_pips: float = 1.0
+    commission_pct: float = 0.0003
     pip_size: float = 0.0001
     swap_long_per_night: float = 0.0
     swap_short_per_night: float = 0.0
@@ -145,7 +150,8 @@ class BacktestRunner:
         entries, exits, short_entries, short_exits = self._signals_to_entries(signals)
 
         avg_price = float(close.mean()) if len(close) > 0 else 1.0
-        fees_per_side = cfg.spread_pct / 2.0
+        # Kosten pro Seite = halber Spread + Kommission (Schritt E), zusaetzlich.
+        fees_per_side = cfg.spread_pct / 2.0 + cfg.commission_pct
         slippage_per_side = (cfg.slippage_pips * cfg.pip_size) / avg_price / 2.0
 
         # Look-Ahead-Fix (Schritt D): Signale entstehen aus den Daten der Kerze i,
