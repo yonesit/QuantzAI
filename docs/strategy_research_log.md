@@ -295,6 +295,79 @@ Das 2-Wege H4-Portfolio übertrifft alle 3-Wege-Varianten im Median/Std (0.413 v
 
 ---
 
+## P&L-basierter OOS-Sharpe (vectorbt) — Realitätscheck der Proxy-Zahlen
+
+*Stand: 2026-06-28 — Erzeugt mit `scripts/analyse_pnl_sharpe.py` + `src/backtesting/wf_pnl.py`*
+
+### Warum diese Sektion existiert
+
+Alle bisher in diesem Log genannten OOS-Sharpe-Werte (inkl. der oft zitierten
+**~0.41**) stammen aus `SignalModel.walk_forward_validate()` →
+`_compute_sharpe()`. Diese Funktion berechnet **keinen echten P&L-Sharpe**,
+sondern einen **Klassifikations-Proxy**: pro OOS-Bar wird `+1.0` (Klasse korrekt
+vorhergesagt) bzw. `-1.0` (falsch) gezählt — **ohne Preise, ohne Lotgröße, ohne
+Spread/Slippage/Swap/Kommission** (Beleg: `src/models/signal_model.py:360-388`).
+
+Diese Sektion stellt dem erstmals einen **echten P&L-Sharpe** gegenüber:
+dieselbe rollierende WF-Fensterlogik (6M Train / 1M Test) und dieselben
+argmax-Signale, aber die Trades werden von `BacktestRunner` (vectorbt) mit
+echten Preisen und konfigurierbaren Kosten simuliert.
+
+### Methodische Hinweise (für die Vergleichbarkeit)
+
+- **Identische Signale:** argmax der Klassen-Wahrscheinlichkeiten, **kein**
+  Confidence-Gate — exakt wie im Proxy.
+- **Trade-Zählung unterschiedlich:** Der Proxy zählt jeden OOS-Bar als „Trade"
+  (~5.200), vectorbt zählt Positions-Roundtrips (aufeinanderfolgende Gleich-Signale
+  = ein durchgehender Trade, ~550). Das ist erwartet und kein Fehler.
+- **Aggregation:** Ø/Median über alle 40 Fenster (inkl. Null-Sharpe-Fenster),
+  wie beim Proxy.
+- Die `50/50`-Spalte ist hier der **einfache Mittelwert** der beiden
+  System-Fenster-Mittelwerte (nicht die monatsgenaue Ausrichtung aus der
+  3-Wege-Analyse). Daher nicht 1:1 mit dem 3-Wege-Wert 0.422 vergleichbar.
+
+### Kostenstufen-Vergleich — Ø OOS-Sharpe je Stufe
+
+| Stufe | Kosten | XAUUSD H4 TF | EURUSD H4 MR | 50/50 (Ø) |
+|-------|--------|-------------:|-------------:|----------:|
+| **Klassifikations-Proxy** (alt, „0.41") | keine (±1-Treffer) | −0.036 | +0.389 | +0.422 ¹ |
+| **A — P&L vectorbt** | Spread + Slippage (pip_size-Bug aktiv ²) | **+0.312** | **−0.189** | **+0.062** |
+| B — + Swap | Spread + Slippage + Swap | _folgt_ | _folgt_ | _folgt_ |
+| C — + XAUUSD pip_size-Fix | wie B, korrekte Gold-Slippage | _folgt_ | _folgt_ | _folgt_ |
+| D — + Look-Ahead-Fix | wie C, Entry = Open der Folgekerze | _folgt_ | _folgt_ | _folgt_ |
+| E — + Kommission | volle Kostenkette | _folgt_ | _folgt_ | _folgt_ |
+
+¹ Proxy-50/50 = monatsgenaue 3-Wege-Ausrichtung (Ø OOS-Sharpe, Tabelle oben). Die A–E-50/50-Werte sind einfache Mittelwerte (s. o.).
+² SCHRITT A nutzt bewusst die aktuellen `BacktestConfig`-Defaults inkl. des bekannten `pip_size=0.0001`-Bugs für XAUUSD (Slippage für Gold faktisch null). Korrektur in Stufe C.
+
+### Detailwerte Stufe A (Median / Std / profitable Fenster)
+
+| System | Ø P&L-Sharpe | Median | Std | Profitable Fenster | Trades |
+|--------|-------------:|-------:|----:|:------------------:|-------:|
+| XAUUSD H4 TF | +0.312 | +0.078 | 4.138 | 21/40 (53 %) | 560 |
+| EURUSD H4 MR | −0.189 | −0.339 | 3.414 | 18/40 (45 %) | 539 |
+
+**Config Stufe A:** `spread_pct=0.0001`, `slippage_pips=1.0`, `pip_size=0.0001`,
+`swap=0.0`, `freq=4h`.
+
+### Erste Erkenntnis (wichtig, nicht beschönigt)
+
+Der Proxy hat die beiden Systeme **gegensätzlich falsch** eingeschätzt:
+
+- **EURUSD H4 MR** sah im Proxy mit **+0.389** am besten aus — und trug den
+  Großteil des „0.41"-Portfoliowerts. Im **echten P&L ist die Strategie negativ**
+  (Ø **−0.189**, Median **−0.339**, nur 45 % profitable Fenster). Der vermeintliche
+  Edge war ein Artefakt der kostenlosen ±1-Bewertung.
+- **XAUUSD H4 TF** war im Proxy faktisch null (−0.036), zeigt im P&L einen
+  leicht positiven Ø (+0.312), aber bei sehr hoher Streuung (Std 4.14) und
+  schwachem Median (+0.078) — kein robuster Edge.
+- Das **50/50-Portfolio** fällt von Proxy **+0.42** auf P&L **+0.06** — und steht
+  damit weit unter dem Live-Ziel (Sharpe ≥ 1.0). Die Stufen B–E (Swap, korrekte
+  Slippage, Look-Ahead-Fix, Kommission) werden diesen Wert voraussichtlich
+  weiter senken.
+
+---
+
 ## Demo-Live-Test: H4-Portfolio (XAUUSD TF + EURUSD MR)
 
 **Startdatum:** 2026-06-22  

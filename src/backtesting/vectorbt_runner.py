@@ -415,6 +415,36 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
+def pnl_sharpe(returns: "pd.Series | np.ndarray", freq: str = "1h") -> Optional[float]:
+    """
+    Annualisierter Sharpe Ratio aus einer ECHTEN Rendite-/P&L-Serie.
+
+    Abgrenzung zum Klassifikations-Proxy in SignalModel._compute_sharpe():
+    Dort werden kuenstliche +1/-1-Werte aus Treffer/Fehltreffer der
+    Klassenvorhersage gebildet (ohne Preise, ohne Lotgroesse, ohne Kosten).
+    Diese Funktion erwartet dagegen echte Renditen, z.B. aus der
+    vectorbt-Equity-Curve (``equity.pct_change()``) – inklusive der via
+    BacktestConfig simulierten Kosten (Spread, Slippage, Swap, Kommission).
+
+    Parameters
+    ----------
+    returns : Rendite-Serie (prozentuale Equity-Veraenderung je Bar).
+    freq    : Pandas-Frequenz-String fuer die Annualisierung ('4h', '1d' ...).
+
+    Returns
+    -------
+    Annualisierter Sharpe als float, oder None wenn < 2 Werte oder Std == 0.
+    """
+    arr = np.asarray(pd.Series(returns).dropna(), dtype=float)
+    if arr.size < 2:
+        return None
+    std = float(arr.std())
+    if std == 0.0:
+        return None
+    ann = _ANN_FACTOR.get(freq.lower(), 252)
+    return float(arr.mean() / std * np.sqrt(ann))
+
+
 def timeframe_to_freq(timeframe: str) -> str:
     """
     Konvertiert MT5-Zeitrahmen-Notation in pandas-Frequenz-String.
