@@ -143,8 +143,10 @@ class TestUpdateCorrelations:
         guard.update_correlations({"EURUSD": df_a, "GBPUSD": df_b})
         assert guard.get_correlation("EURUSD", "GBPUSD") > 0.9
 
-        # Tageswechsel simulieren
-        yesterday = date.today() - timedelta(days=1)
+        # Tageswechsel simulieren. WICHTIG: gleiche Zeitbasis wie die Produktion
+        # (update_correlations nutzt UTC). Sonst kollidiert local-yesterday in der
+        # Zeitspanne zwischen lokaler und UTC-Mitternacht mit dem UTC-heute.
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
         guard._last_update = yesterday
 
         # Neuer Update mit negativ korrelierten Daten
