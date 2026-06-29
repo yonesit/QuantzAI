@@ -9,19 +9,35 @@ ausschließlich die reproduzierbare Tooling-Pipeline (`scripts/`, `src/data/`).
 Lange, tick-abgeleitete M15-Historie inkl. **echtem historischem Bid-Ask-Spread**
 pro Bar. Grundlage für das kostenbewusste Triple-Barrier-Labeling (Phase 1).
 
-| Datei | Symbol | Zeitraum | Inhalt |
-|-------|--------|----------|--------|
-| `EURUSD_M15_<von>-<bis>.parquet` | EURUSD | ab ~2003 | OHLC (Mid) + Spread |
-| `XAUUSD_M15_<von>-<bis>.parquet` | XAUUSD | ab ~2010 | OHLC (Mid) + Spread |
-
 Spalten: `timestamp` (UTC, Bar-Open), `open/high/low/close` (Mid-Preis),
 `volume`, `spread_mean`, `spread_median` (Preis-Einheiten), `tick_count`.
 
-Erzeugen / fortsetzen (resume-fähig):
+### Baseline-Datensatz (10 Jahre, identisches Fenster) — AKTUELL
+
+Für die erste Baseline werden **beide Symbole über den IDENTISCHEN Zeitraum
+`2016-01-01 .. heute`** gezogen, damit der spätere Portfolio-Sharpe über dieselben
+Marktregime / dieselbe Länge gemessen wird (nicht unterschiedliche Historien-Längen).
+
+| Datei | Symbol | Zeitraum |
+|-------|--------|----------|
+| `EURUSD_M15_2016-2026.parquet` | EURUSD | 2016-01-01 .. heute |
+| `XAUUSD_M15_2016-2026.parquet` | XAUUSD | 2016-01-01 .. heute |
+
+Erzeugen / fortsetzen (resume-fähig, gleicher Zeitraum für beide):
 ```
-python scripts/fetch_dukascopy.py --symbol EURUSD
-python scripts/fetch_dukascopy.py --symbol XAUUSD
+python scripts/fetch_dukascopy.py --symbol EURUSD --start 2016-01-01
+python scripts/fetch_dukascopy.py --symbol XAUUSD --start 2016-01-01
 ```
+
+### Vollhistorie — ZIEL FÜR PHASE 5 (Robustheit)
+
+Die **volle Historie (EURUSD ~2003, XAUUSD ~2010)** bleibt das Ziel: sie wird für
+**Phase 5 (Robustheits-Validierung / ungesehener Out-of-Sample-Härtetest)** per
+**Resume** nachgezogen — ohne `--start` lädt das Skript die maximale Historie und
+nutzt die bereits im Tages-Cache liegenden Tage weiter. Das Output-Parquet wird
+dabei exakt auf das angeforderte `[start, end]`-Fenster geklemmt; der Cache behält
+immer alle geladenen Tage.
+
 Tages-Cache: `dukascopy_cache/<SYMBOL>/<YYYY-MM-DD>.parquet`. Ein Abbruch verwirft
 nur den laufenden Tag; erneuter Start überspringt bereits geladene Tage.
 

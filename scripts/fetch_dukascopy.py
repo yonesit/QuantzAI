@@ -20,6 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
 from loguru import logger
 
 # Projekt-Root in den Pfad
@@ -84,6 +85,19 @@ def main() -> int:
 
     if df.empty:
         logger.error("Keine Daten fuer {sym} – Abbruch.", sym=symbol)
+        return 1
+
+    # Output exakt auf das angeforderte Fenster [start, end] klemmen. Der Tages-Cache
+    # behaelt bewusst ALLE bereits geladenen Tage (z.B. Vollhistorie ab 2003/2010),
+    # damit Phase 5 die laengere Historie spaeter per Resume nachziehen kann.
+    before = len(df)
+    df = df[(df["timestamp"] >= pd.Timestamp(start)) &
+            (df["timestamp"] <= pd.Timestamp(end))].reset_index(drop=True)
+    if len(df) != before:
+        logger.info("Output auf Fenster geklemmt | {sym} | {a} -> {b} Bars | {s} .. {e}",
+                    sym=symbol, a=before, b=len(df), s=start.date(), e=end.date())
+    if df.empty:
+        logger.error("Nach Klemmung keine Daten im Fenster fuer {sym}.", sym=symbol)
         return 1
 
     parquet_path = save_parquet(df, symbol)
