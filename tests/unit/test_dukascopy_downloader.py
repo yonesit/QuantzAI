@@ -246,6 +246,21 @@ def test_download_range_failed_day_not_cached_and_continues(tmp_path):
     assert not (tmp_path / "EURUSD" / "2024-03-05.parquet").exists()
 
 
+def test_fill_cache_range_writes_cache_without_assembling(tmp_path):
+    day = datetime(2024, 3, 5, tzinfo=timezone.utc)
+    sess, url = _single_day_session("EURUSD", day)
+    dl = DukascopyDownloader(tmp_path, session=sess, sleep_func=_noop_sleep, rate_limit_s=0.0)
+
+    stats = dl.fill_cache_range("EURUSD", day, day)
+    # Rueckgabe sind nur Stats (kein DataFrame); Cache-Datei ist geschrieben
+    assert isinstance(stats, DownloadStats)
+    assert stats.days_fetched == 1
+    assert (tmp_path / "EURUSD" / "2024-03-05.parquet").exists()
+    # assemble_from_cache liefert dieselben Bars wie download_range
+    df = dl.assemble_from_cache("EURUSD")
+    assert not df.empty
+
+
 def test_download_range_skips_saturday(tmp_path):
     sat = datetime(2024, 3, 9, tzinfo=timezone.utc)   # Samstag
     sess = _FakeSession({})

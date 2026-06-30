@@ -351,20 +351,20 @@ class DukascopyDownloader:
         all_ticks = pd.concat(frames, ignore_index=True)
         return ticks_to_m15(all_ticks)
 
-    def download_range(
+    def fill_cache_range(
         self,
         symbol: str,
         start:  datetime,
         end:    datetime,
         skip_saturday: bool = True,
         progress: bool = True,
-    ) -> tuple[pd.DataFrame, DownloadStats]:
+    ) -> DownloadStats:
         """
-        Laedt M15-Bars fuer [start, end] (tageweise, resumebar).
-
-        Pro Tag wird ein Cache-Parquet geschrieben (auch leer, als Resume-Marker).
-        Vorhandene Tage werden uebersprungen. Gibt den zusammengesetzten
-        M15-DataFrame und Download-Statistiken zurueck.
+        Fuellt NUR den Tages-Cache fuer [start, end] (tageweise, resumebar) –
+        ohne abschliessende Assemblierung. Pro Tag wird ein Cache-Parquet
+        geschrieben (auch leer, als Resume-Marker); vorhandene Tage werden
+        uebersprungen. Mehrere Worker koennen disjunkte Bereiche parallel fuellen,
+        da pro Tag genau eine Datei entsteht (keine Kollision).
         """
         start = _as_utc(start)
         end   = _as_utc(end)
@@ -422,6 +422,22 @@ class DukascopyDownloader:
                 )
             day += timedelta(days=1)
 
+        return stats
+
+    def download_range(
+        self,
+        symbol: str,
+        start:  datetime,
+        end:    datetime,
+        skip_saturday: bool = True,
+        progress: bool = True,
+    ) -> tuple[pd.DataFrame, DownloadStats]:
+        """
+        Laedt M15-Bars fuer [start, end] (tageweise, resumebar) und gibt den
+        zusammengesetzten M15-DataFrame samt Download-Statistiken zurueck.
+        Duenne Huelle um fill_cache_range + assemble_from_cache.
+        """
+        stats = self.fill_cache_range(symbol, start, end, skip_saturday, progress)
         full = self.assemble_from_cache(symbol)
         logger.info(
             "Dukascopy {sym} fertig | bars={n} | {s} .. {e}",
