@@ -1,0 +1,129 @@
+symbol: EURUSD
+unit: pips
+cost_convention: round_turn = effective_spread (1x voll gekreuzt) + 2 * commission_per_side
+commission:
+  per_side_pips: 0.232
+  round_turn_pips: 0.464
+effective_spread_by_session_pips:
+  Asien:
+    median: 0.6
+    p90: 0.6
+    n: 2956
+  Europa:
+    median: 0.2
+    p90: 0.5
+    n: 329
+  Overlap:
+    median: 0.2
+    p90: 0.4
+    n: 266
+  US:
+    median: 0.2
+    p90: 0.4
+    n: 311
+  Rollover:
+    median: 0.2
+    p90: 0.6
+    n: 788
+duka_to_fusion_spread_mapping:
+  Asien:
+    factor: 2.0
+    additive_pips: 0.3
+  Europa:
+    factor: 0.6667
+    additive_pips: -0.1
+  Overlap:
+    factor: 0.6667
+    additive_pips: -0.1
+  US:
+    factor: 0.6667
+    additive_pips: -0.1
+  Rollover:
+    factor: 0.3333
+    additive_pips: -0.4
+recommended_robust_factor: 0.6667
+total_roundturn_cost_by_session_pips:
+  Asien: 1.064
+  Europa: 0.664
+  Overlap: 0.664
+  US: 0.664
+  Rollover: 0.664
+sessions_detail:
+  Asien:
+    duka_spread_median_pips: 0.3
+    fusion_effective_spread_median_pips: 0.6
+    fusion_effective_spread_p90_pips: 0.6
+    fusion_tick_n: 2956
+    duka_to_fusion_factor: 2.0
+    duka_to_fusion_additive_pips: 0.3
+    total_roundturn_cost_pips: 1.064
+  Europa:
+    duka_spread_median_pips: 0.3
+    fusion_effective_spread_median_pips: 0.2
+    fusion_effective_spread_p90_pips: 0.5
+    fusion_tick_n: 329
+    duka_to_fusion_factor: 0.6667
+    duka_to_fusion_additive_pips: -0.1
+    total_roundturn_cost_pips: 0.664
+  Overlap:
+    duka_spread_median_pips: 0.3
+    fusion_effective_spread_median_pips: 0.2
+    fusion_effective_spread_p90_pips: 0.4
+    fusion_tick_n: 266
+    duka_to_fusion_factor: 0.6667
+    duka_to_fusion_additive_pips: -0.1
+    total_roundturn_cost_pips: 0.664
+  US:
+    duka_spread_median_pips: 0.3
+    fusion_effective_spread_median_pips: 0.2
+    fusion_effective_spread_p90_pips: 0.4
+    fusion_tick_n: 311
+    duka_to_fusion_factor: 0.6667
+    duka_to_fusion_additive_pips: -0.1
+    total_roundturn_cost_pips: 0.664
+  Rollover:
+    duka_spread_median_pips: 0.6
+    fusion_effective_spread_median_pips: 0.2
+    fusion_effective_spread_p90_pips: 0.6
+    fusion_tick_n: 788
+    duka_to_fusion_factor: 0.3333
+    duka_to_fusion_additive_pips: -0.4
+    total_roundturn_cost_pips: 0.664
+session_bounds_utc:
+  Asien:
+  - 0
+  - 7
+  Europa:
+  - 7
+  - 13
+  Overlap:
+  - 13
+  - 16
+  US:
+  - 16
+  - 21
+  Rollover:
+  - 21
+  - 24
+overlap:
+  spread_ticks: 2026-04-06..2026-06-29 (Demo-Tick-Limit ~3 Monate)
+  commission_deals: 2020-01-01..now (alle EURUSD-Deals des Kontos)
+  duka_history: 2016-01..2026-06 (Dukascopy M15)
+sources:
+  dukascopy: data\processed\EURUSD_M15_2016-2026.parquet
+  fusion_ticks: data\processed\fusion_ref\EURUSD_tick_spread_sample.parquet
+  commission: MT5 history_deals_get + order_calc_profit (Konto 383619)
+measured_vs_assumed:
+  commission_per_side_pips: measured_mt5_deals_n=68
+  effective_spread_by_session: measured_fusion_ticks_two_sided_quotes
+  duka_spread: measured_dukascopy
+  caveat_spread: Fusion-Tick-History nur ~3 Monate (2026-04+); ~97% bid==ask Feed-Artefakte
+    verworfen; Session-Medianen rauschen (kleine n). Overall-Effektivspread ~0.3 Pips
+    ~ Dukascopy -> robuster Faktor ~1.0. Dukascopy-Rollover-Spike (P90 2.15) bleibt
+    massgeblich fuer 21-24 UTC.
+points_to_pips_note: MT5-Spread/Kommission in Konto-Ccy EUR; EURUSD 5-stellig, 10
+  Points = 1 Pip; Pip-Wert per order_calc_profit gemessen.
+notes: 'Raw-/Zero-Konto: reale Kosten = effektiver Spread (variabel) + fixe Kommission.
+  Bar-spread-Feld war zu 95% Null und wurde verworfen. Fuers Labeling der Dukascopy-Vollhistorie:
+  Dukascopy-Spread je Session mit recommended_robust_factor skalieren, dann round_turn-Kommission
+  addieren (Konvention siehe cost_convention).'

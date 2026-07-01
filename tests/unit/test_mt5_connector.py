@@ -223,6 +223,20 @@ class TestGetOHLCV:
             df = connected_connector.get_ohlcv("EURUSD", tf, _dt(30), _dt(0))
             assert len(df) == 5, f"Timeframe {tf} fehlgeschlagen"
 
+    def test_spread_excluded_by_default(self, connected_connector, stub):
+        stub.copy_rates_range.return_value = _make_rates(4)
+        df = connected_connector.get_ohlcv("EURUSD", "M15", _dt(7), _dt(0))
+        assert "spread" not in df.columns
+
+    def test_include_spread_keeps_column(self, connected_connector, stub):
+        rates = _make_rates(4)
+        rates["spread"] = [6, 0, 20, 3]
+        stub.copy_rates_range.return_value = rates
+        df = connected_connector.get_ohlcv("EURUSD", "M15", _dt(7), _dt(0),
+                                           include_spread=True)
+        assert "spread" in df.columns
+        assert list(df["spread"]) == [6, 0, 20, 3]
+
 
 # ---------------------------------------------------------------------------
 # Tests: OHLCV mit count

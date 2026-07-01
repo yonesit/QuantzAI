@@ -296,6 +296,7 @@ class MT5Connector:
         timeframe: str | Timeframe,
         start: datetime,
         end: datetime,
+        include_spread: bool = False,
     ) -> pd.DataFrame:
         """
         Liefert OHLCV-Daten als DataFrame mit UTC-DatetimeIndex.
@@ -306,11 +307,17 @@ class MT5Connector:
         timeframe : Timeframe-Enum oder String ("H1", "M15", ...)
         start     : Startzeit (naive datetimes werden als UTC behandelt)
         end       : Endzeit   (naive datetimes werden als UTC behandelt)
+        include_spread : Wenn True wird die MT5-``spread``-Spalte (Spread in
+                    POINTS je Bar, vom Broker gemeldet) mit ausgegeben. Standard
+                    False, damit bestehende Aufrufer unveraendert nur OHLCV
+                    erhalten. ACHTUNG: spread ist in Points, nicht Pips – die
+                    Points->Pips-Umrechnung erfolgt bewusst erst beim Verbraucher.
 
         Returns
         -------
         pd.DataFrame  Index: UTC DatetimeIndex
                       Spalten: open, high, low, close, volume
+                      (+ spread in Points, falls include_spread=True)
         """
         if not self.is_connected:
             raise MT5ConnectionError("Nicht verbunden – rufe zuerst connect() auf.")
@@ -358,6 +365,8 @@ class MT5Connector:
         df.index.name = None
 
         cols = ["open", "high", "low", "close", "volume"]
+        if include_spread and "spread" in df.columns:
+            cols.append("spread")
         df = df[[c for c in cols if c in df.columns]]
 
         # Datums-Filter (relevant wenn Fallback copy_rates_from_pos genutzt wurde)
